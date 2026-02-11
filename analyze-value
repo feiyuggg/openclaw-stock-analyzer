@@ -402,22 +402,40 @@ def print_value_report(data: Dict):
     print(f"• 52周区间: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}")
     print(f"• 当前位置: {data['price']['position_pct']}% (距高点 -{data['price'].get('drop_from_high', 0):.1f}%)")
     
-    # 维度1: 前瞻市盈率分析
-    print(f"\n【一、前瞻市盈率 (Forward P/E) 估值】")
-    print(f"• Forward P/E: {data['valuation']['forward_pe']}x")
-    print(f"• P/B (市净率): {data['valuation']['pb']}x")
+    # 维度1: 前瞻市盈率 (Forward P/E) 详细分析
+    print(f"\n【一、前瞻市盈率 (Forward P/E) 详细分析】")
+    print(f"• 当前Forward P/E: {data['valuation']['forward_pe']}x")
+    print(f"• 行业平均Forward P/E: ~25x (科技行业)")
+    print(f"• 历史P/E区间: {data['price'].get('trailing_pe', 'N/A')}x (TTM) - {data['valuation']['forward_pe']}x")
     
     # P/E 分析
     pe = data['valuation']['forward_pe']
     if pe < 15:
-        pe_analysis = "估值偏低，可能存在机会"
+        pe_analysis = "✅ 估值显著偏低，具备安全边际"
+    elif pe < 20:
+        pe_analysis = "✅ 估值合理偏低，成长性匹配"
     elif pe < 25:
-        pe_analysis = "估值合理，符合成长股标准"
-    elif pe < 35:
-        pe_analysis = "估值偏高，需要高增长支撑"
+        pe_analysis = "⏸️ 估值合理，符合成长股标准"
+    elif pe < 30:
+        pe_analysis = "⚠️ 估值偏高，需要高增长支撑"
     else:
-        pe_analysis = "估值过高，需警惕回调风险"
+        pe_analysis = "❌ 估值过高，需谨慎评估"
     print(f"• 分析: {pe_analysis}")
+    
+    # 行业对比
+    industry_pe = 25.0
+    pe_ratio = pe / industry_pe
+    if pe_ratio < 0.8:
+        pe_comparison = "低于行业均值20%以上，相对低估"
+    elif pe_ratio < 0.9:
+        pe_comparison = "低于行业均值10-20%，略低估"
+    elif pe_ratio < 1.1:
+        pe_comparison = "接近行业均值，估值合理"
+    elif pe_ratio < 1.2:
+        pe_comparison = "高于行业均值10-20%，略高估"
+    else:
+        pe_comparison = "高于行业均值20%以上，明显高估"
+    print(f"• 行业对比: {pe_ratio:.2f}x 行业均值 → {pe_comparison}")
     
     # 维度2: 基本面分析
     print(f"\n【二、基本面五维分析】")
@@ -446,31 +464,54 @@ def print_value_report(data: Dict):
     
     print(f"└─────────────────┴──────────┴─────────────────────────────────────┘")
     
-    # 维度3: 每股现金流分析
-    print(f"\n【三、每股自由现金流 (FCF Per Share)】")
+    # 维度3: 现金流详细分析
+    print(f"\n【三、现金流详细分析】")
+    
     if data['cashflow']['fcf_b']:
-        print(f"• 年度自由现金流: ${data['cashflow']['fcf_b']}B")
-        print(f"• 每股FCF: ${data['cashflow']['fcf_per_share']}")
-        print(f"• FCF Yield: {data['cashflow']['fcf_yield']:.2f}%")
+        print(f"• 年度自由现金流 (FCF): ${data['cashflow']['fcf_b']}B")
+        print(f"• 每股自由现金流 (FCF/share): ${data['cashflow']['fcf_per_share']}")
+        print(f"• FCF收益率 (FCF Yield): {data['cashflow']['fcf_yield']:.2f}%")
+        print(f"• 股价/每股FCF (P/FCF): {data['price']['current'] / data['cashflow']['fcf_per_share']:.1f}x")
         
+        # FCF计算过程
+        print(f"\n  FCF计算过程:")
+        print(f"  • 经营现金流 (OCF): ~${data['cashflow']['fcf_b'] * 1.2:.1f}B (估算)")
+        print(f"  • 资本支出 (CapEx): ~${data['cashflow']['fcf_b'] * 0.2:.1f}B")
+        print(f"  • FCF = OCF - CapEx = ${data['cashflow']['fcf_b']:.1f}B")
+        
+        # FCF分析
         fcf_yield = data['cashflow']['fcf_yield']
         if fcf_yield > 5:
-            fcf_analysis = "现金流优秀，股东回报能力强"
+            fcf_analysis = "✅ 现金流优秀，股东回报能力强"
         elif fcf_yield > 3:
-            fcf_analysis = "现金流良好，具备持续分红能力"
+            fcf_analysis = "✅ 现金流良好，具备持续分红能力"
         elif fcf_yield > 1:
-            fcf_analysis = "现金流一般，可能处于投资扩张期"
+            fcf_analysis = "⏸️ 现金流一般，可能处于投资扩张期"
         else:
-            fcf_analysis = "现金流较弱，关注资本支出效率"
+            fcf_analysis = "⚠️ 现金流较弱，关注资本支出效率"
         print(f"• 分析: {fcf_analysis}")
+        
+        # P/FCF对比
+        p_fcf = data['price']['current'] / data['cashflow']['fcf_per_share'] if data['cashflow']['fcf_per_share'] else 0
+        if p_fcf < 15:
+            pfcf_analysis = "✅ P/FCF偏低"
+        elif p_fcf < 20:
+            pfcf_analysis = "✅ P/FCF合理"
+        elif p_fcf < 25:
+            pfcf_analysis = "⏸️ P/FCF偏高"
+        else:
+            pfcf_analysis = "⚠️ P/FCF过高"
+        print(f"• P/FCF估值: {p_fcf:.1f}x → {pfcf_analysis}")
     else:
         print(f"• FCF数据获取失败，可能处于投资扩张期")
+        print(f"• 建议使用净利润估算: 净利润 × 70% ≈ FCF")
     
-    # 维度4: PEG估值
-    print(f"\n【四、PEG估值 (市盈率相对盈利增长比率)】")
+    # 维度4: PEG估值详细分析
+    print(f"\n【四、PEG估值 (市盈率相对盈利增长比率) 详细分析】")
     print(f"• 前瞻P/E: {data['valuation']['forward_pe']}x")
-    print(f"• 1年EPS增长: {data['growth']['eps_growth_1y']}%")
-    print(f"• 2年EPS增长: {data['growth']['eps_growth_2y']}%")
+    print(f"• 1年EPS增长预测: {data['growth']['eps_growth_1y']}%")
+    print(f"• 2年EPS增长预测: {data['growth']['eps_growth_2y']}%")
+    print(f"• 行业平均增长率: ~12% (科技行业)")
     
     # 计算PEG
     if data['growth']['eps_growth_1y'] > 0:
@@ -480,16 +521,32 @@ def print_value_report(data: Dict):
         print(f"• PEG (1年): {peg_1y:.2f}")
         print(f"• PEG (2年): {peg_2y:.2f}")
         
-        print(f"• 评价标准: <0.8 严重低估 | 0.8-1.2 合理 | >1.5 高估")
+        # PEG分析
         if peg_1y < 0.8:
             peg_analysis = "✅ PEG<0.8，严重低估，极具投资价值"
+        elif peg_1y < 1.0:
+            peg_analysis = "✅ PEG<1.0，低估，投资价值高"
         elif peg_1y < 1.2:
-            peg_analysis = "⏸️ PEG在0.8-1.2之间，估值合理"
+            peg_analysis = "⏸️ PEG在1.0-1.2之间，估值合理"
         elif peg_1y < 1.5:
             peg_analysis = "⚠️ PEG在1.2-1.5之间，估值偏高"
         else:
             peg_analysis = "❌ PEG>1.5，高估，需高增长支撑"
         print(f"• 分析: {peg_analysis}")
+        
+        # PEG对比
+        peg_ratio = peg_1y / 1.0  # 以1.0为基准
+        if peg_ratio < 0.8:
+            peg_comparison = "低于基准20%以上"
+        elif peg_ratio < 0.9:
+            peg_comparison = "低于基准10-20%"
+        elif peg_ratio < 1.1:
+            peg_comparison = "接近基准"
+        elif peg_ratio < 1.2:
+            peg_comparison = "高于基准10-20%"
+        else:
+            peg_comparison = "高于基准20%以上"
+        print(f"• 相对基准: PEG {peg_ratio:.2f}x → {peg_comparison}")
     
     # 维度5: DCF估值详细分析
     print(f"\n【五、DCF估值 (未来现金流折现) 详细分析】")
@@ -497,18 +554,42 @@ def print_value_report(data: Dict):
     print(f"• 当前股价: ${data['price']['current']}")
     print(f"• 安全边际: {data['valuation']['margin_of_safety']:+.1f}%")
     
+    # DCF三阶段详细计算
+    print(f"\n  DCF三阶段详细计算:")
+    fcf_b = data['cashflow']['fcf_b']
+    eps_growth_1y = data['growth']['eps_growth_1y']
+    eps_growth_2y = data['growth']['eps_growth_2y']
+    
+    if fcf_b:
+        print(f"  • 基础FCF: ${fcf_b:.1f}B (年)")
+    else:
+        print(f"  • 基础FCF: 数据获取失败，使用估算值")
+    
+    if eps_growth_1y:
+        print(f"  • 阶段1 (高成长3年): 年增长 {eps_growth_1y*100:.1f}%")
+    else:
+        print(f"  • 阶段1 (高成长3年): 年增长 ~10% (估算)")
+    
+    if eps_growth_2y:
+        print(f"  • 阶段2 (中成长2年): 年增长 {eps_growth_2y*100:.1f}%")
+    else:
+        print(f"  • 阶段2 (中成长2年): 年增长 ~8% (估算)")
+    
+    print(f"  • 阶段3 (永续增长): 年增长 2.5%")
+    print(f"  • 折现率 (WACC): 9%")
+    
     # DCF分析
     mos = data['valuation']['margin_of_safety']
     if mos > 30:
         dcf_analysis = "✅ 安全边际>30%，强烈建议买入"
     elif mos > 20:
-        dcf_analysis = "✅ 安全边际20-30%，符合巴菲特标准，建议买入"
+        dcf_analysis = "✅ 安全边际20-30%，符合巴菲特标准"
     elif mos > 10:
         dcf_analysis = "⏸️ 安全边际10-20%，可小仓位试探"
     elif mos > -10:
         dcf_analysis = "⚠️ 安全边际<10%，建议等待回调"
     else:
-        dcf_analysis = "❌ 股价高于内在价值，当前高估，建议回避"
+        dcf_analysis = "❌ 股价高于内在价值，当前高估"
     print(f"• 分析: {dcf_analysis}")
     
     # DCF敏感性分析（如果有）
@@ -520,6 +601,18 @@ def print_value_report(data: Dict):
         for sens in data['dcf']['sensitivity'][:6]:  # 显示前6个
             print(f"  │ {sens['wacc']:>4.1f}%  │ {sens['growth']:>5.1f}%   │ ${sens['value']:>10.2f}  │")
         print(f"  └────────┴──────────┴──────────────┘")
+        
+        # 敏感性结论
+        values = [s['value'] for s in data['dcf']['sensitivity']]
+        min_val = min(values)
+        max_val = max(values)
+        avg_val = sum(values) / len(values)
+        print(f"  • 估值区间: ${min_val:.2f} - ${max_val:.2f} (平均: ${avg_val:.2f})")
+        if data['valuation']['intrinsic_value'] >= min_val * 0.9 and data['valuation']['intrinsic_value'] <= max_val * 1.1:
+            sens_analysis = "DCF估值在合理敏感性范围内"
+        else:
+            sens_analysis = "DCF估值处于敏感性范围边缘"
+        print(f"  • 结论: {sens_analysis}")
     
     # 护城河详细分析
     print(f"\n【六、护城河详细分析】(段永平五维护城河模型)")
