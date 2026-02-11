@@ -390,64 +390,214 @@ def value_investing_analysis(ticker: str) -> Dict:
 
 def print_value_report(data: Dict):
     """打印价值投资分析报告"""
-    print("\n" + "=" * 75)
+    print("\n" + "=" * 80)
     print(f"📊 {data['name']} ({data['ticker']}) 价值投资分析报告")
-    print("=" * 75)
+    print("=" * 80)
     print(f"💡 理念: 买公司，不是买股票 | 和时间做朋友 | 左侧交易")
-    print("=" * 75)
+    print("=" * 80)
     
     # 核心数据
     print(f"\n【核心数据】")
     print(f"• 股价: ${data['price']['current']} | 市值: ${data['price']['market_cap_b']:.1f}B")
     print(f"• 52周区间: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}")
-    print(f"• Forward P/E: {data['valuation']['forward_pe']}x | P/B: {data['valuation']['pb']}x")
+    print(f"• 当前位置: {data['price']['position_pct']}% (距高点 -{data['price'].get('drop_from_high', 0):.1f}%)")
     
-    # 内在价值与安全边际
-    print(f"\n【巴菲特式估值】")
-    print(f"• DCF内在价值: ${data['valuation']['intrinsic_value']}")
-    print(f"• 安全边际: {data['valuation']['margin_of_safety']:+.1f}%")
-    if data['valuation']['margin_of_safety'] > 20:
-        print(f"  ✅ 安全边际充足 (>20%)，符合巴菲特标准")
-    elif data['valuation']['margin_of_safety'] > 10:
-        print(f"  ⏸️ 安全边际一般 (10-20%)，可小仓位试探")
+    # 维度1: 前瞻市盈率分析
+    print(f"\n【一、前瞻市盈率 (Forward P/E) 估值】")
+    print(f"• Forward P/E: {data['valuation']['forward_pe']}x")
+    print(f"• P/B (市净率): {data['valuation']['pb']}x")
+    
+    # P/E 分析
+    pe = data['valuation']['forward_pe']
+    if pe < 15:
+        pe_analysis = "估值偏低，可能存在机会"
+    elif pe < 25:
+        pe_analysis = "估值合理，符合成长股标准"
+    elif pe < 35:
+        pe_analysis = "估值偏高，需要高增长支撑"
     else:
-        print(f"  ⚠️ 安全边际不足 (<10%)，建议等待")
+        pe_analysis = "估值过高，需警惕回调风险"
+    print(f"• 分析: {pe_analysis}")
     
-    # 护城河
-    print(f"\n【护城河分析】(段永平五维)")
-    print(f"• 网络效应: {'⭐' * data['moat']['scores']['network']}")
-    print(f"• 品牌护城河: {'⭐' * data['moat']['scores']['brand']}")
-    print(f"• 技术护城河: {'⭐' * data['moat']['scores']['tech']}")
-    print(f"• 成本优势: {'⭐' * data['moat']['scores']['cost']}")
-    print(f"• 切换成本: {'⭐' * data['moat']['scores']['switching']}")
+    # 维度2: 基本面分析
+    print(f"\n【二、基本面五维分析】")
+    print(f"┌─────────────────┬──────────┬─────────────────────────────────────┐")
+    print(f"│ 指标            │ 数值     │ 分析                                │")
+    print(f"├─────────────────┼──────────┼─────────────────────────────────────┤")
+    
+    if data['fundamentals']['roe']:
+        roe = data['fundamentals']['roe']
+        roe_analysis = "优秀" if roe > 20 else "良好" if roe > 15 else "一般"
+        print(f"│ ROE             │ {roe:>6.1f}%  │ {roe_analysis:20} (巴菲特标准>15%) │")
+    
+    if data['fundamentals']['roa']:
+        roa = data['fundamentals']['roa']
+        print(f"│ ROA             │ {roa:>6.1f}%  │ 资产使用效率指标                    │")
+    
+    if data['fundamentals']['gross_margin']:
+        gm = data['fundamentals']['gross_margin']
+        gm_analysis = "高毛利" if gm > 40 else "中等" if gm > 20 else "低毛利"
+        print(f"│ 毛利率          │ {gm:>6.1f}%  │ {gm_analysis:20} (商业模式健康度) │")
+    
+    if data['fundamentals']['net_margin']:
+        nm = data['fundamentals']['net_margin']
+        nm_analysis = "盈利能力强" if nm > 15 else "盈利能力一般" if nm > 8 else "盈利能力弱"
+        print(f"│ 净利率          │ {nm:>6.1f}%  │ {nm_analysis:26} │")
+    
+    print(f"└─────────────────┴──────────┴─────────────────────────────────────┘")
+    
+    # 维度3: 每股现金流分析
+    print(f"\n【三、每股自由现金流 (FCF Per Share)】")
+    if data['cashflow']['fcf_b']:
+        print(f"• 年度自由现金流: ${data['cashflow']['fcf_b']}B")
+        print(f"• 每股FCF: ${data['cashflow']['fcf_per_share']}")
+        print(f"• FCF Yield: {data['cashflow']['fcf_yield']:.2f}%")
+        
+        fcf_yield = data['cashflow']['fcf_yield']
+        if fcf_yield > 5:
+            fcf_analysis = "现金流优秀，股东回报能力强"
+        elif fcf_yield > 3:
+            fcf_analysis = "现金流良好，具备持续分红能力"
+        elif fcf_yield > 1:
+            fcf_analysis = "现金流一般，可能处于投资扩张期"
+        else:
+            fcf_analysis = "现金流较弱，关注资本支出效率"
+        print(f"• 分析: {fcf_analysis}")
+    else:
+        print(f"• FCF数据获取失败，可能处于投资扩张期")
+    
+    # 维度4: PEG估值
+    print(f"\n【四、PEG估值 (市盈率相对盈利增长比率)】")
+    print(f"• 前瞻P/E: {data['valuation']['forward_pe']}x")
+    print(f"• 1年EPS增长: {data['growth']['eps_growth_1y']}%")
+    print(f"• 2年EPS增长: {data['growth']['eps_growth_2y']}%")
+    
+    # 计算PEG
+    if data['growth']['eps_growth_1y'] > 0:
+        peg_1y = data['valuation']['forward_pe'] / data['growth']['eps_growth_1y']
+        peg_2y = data['valuation']['forward_pe'] / data['growth']['eps_growth_2y'] if data['growth']['eps_growth_2y'] > 0 else 999
+        
+        print(f"• PEG (1年): {peg_1y:.2f}")
+        print(f"• PEG (2年): {peg_2y:.2f}")
+        
+        print(f"• 评价标准: <0.8 严重低估 | 0.8-1.2 合理 | >1.5 高估")
+        if peg_1y < 0.8:
+            peg_analysis = "✅ PEG<0.8，严重低估，极具投资价值"
+        elif peg_1y < 1.2:
+            peg_analysis = "⏸️ PEG在0.8-1.2之间，估值合理"
+        elif peg_1y < 1.5:
+            peg_analysis = "⚠️ PEG在1.2-1.5之间，估值偏高"
+        else:
+            peg_analysis = "❌ PEG>1.5，高估，需高增长支撑"
+        print(f"• 分析: {peg_analysis}")
+    
+    # 维度5: DCF估值详细分析
+    print(f"\n【五、DCF估值 (未来现金流折现) 详细分析】")
+    print(f"• DCF内在价值: ${data['valuation']['intrinsic_value']}")
+    print(f"• 当前股价: ${data['price']['current']}")
+    print(f"• 安全边际: {data['valuation']['margin_of_safety']:+.1f}%")
+    
+    # DCF分析
+    mos = data['valuation']['margin_of_safety']
+    if mos > 30:
+        dcf_analysis = "✅ 安全边际>30%，强烈建议买入"
+    elif mos > 20:
+        dcf_analysis = "✅ 安全边际20-30%，符合巴菲特标准，建议买入"
+    elif mos > 10:
+        dcf_analysis = "⏸️ 安全边际10-20%，可小仓位试探"
+    elif mos > -10:
+        dcf_analysis = "⚠️ 安全边际<10%，建议等待回调"
+    else:
+        dcf_analysis = "❌ 股价高于内在价值，当前高估，建议回避"
+    print(f"• 分析: {dcf_analysis}")
+    
+    # DCF敏感性分析（如果有）
+    if 'dcf' in data and data['dcf'].get('sensitivity'):
+        print(f"\n  DCF敏感性分析 (不同WACC和永续增长率组合):")
+        print(f"  ┌────────┬──────────┬──────────────┐")
+        print(f"  │ WACC   │ 永续增长 │ 内在价值     │")
+        print(f"  ├────────┼──────────┼──────────────┤")
+        for sens in data['dcf']['sensitivity'][:6]:  # 显示前6个
+            print(f"  │ {sens['wacc']:>4.1f}%  │ {sens['growth']:>5.1f}%   │ ${sens['value']:>10.2f}  │")
+        print(f"  └────────┴──────────┴──────────────┘")
+    
+    # 护城河详细分析
+    print(f"\n【六、护城河详细分析】(段永平五维护城河模型)")
+    print(f"┌─────────────────┬──────────┬─────────────────────────────────────┐")
+    print(f"│ 护城河类型      │ 评分     │ 分析                                │")
+    print(f"├─────────────────┼──────────┼─────────────────────────────────────┤")
+    
+    network_score = data['moat']['scores']['network']
+    network_analysis = "极强" if network_score == 5 else "强" if network_score == 4 else "中等"
+    print(f"│ 网络效应        │ {'⭐' * network_score:<5}   │ {network_analysis:20} (平台/生态价值) │")
+    
+    brand_score = data['moat']['scores']['brand']
+    brand_analysis = "极强" if brand_score == 5 else "强" if brand_score == 4 else "中等"
+    print(f"│ 品牌护城河      │ {'⭐' * brand_score:<5}   │ {brand_analysis:20} (定价权/用户忠诚) │")
+    
+    tech_score = data['moat']['scores']['tech']
+    tech_analysis = "极强" if tech_score == 5 else "强" if tech_score == 4 else "中等"
+    print(f"│ 技术护城河      │ {'⭐' * tech_score:<5}   │ {tech_analysis:20} (技术壁垒/R&D) │")
+    
+    cost_score = data['moat']['scores']['cost']
+    cost_analysis = "极强" if cost_score == 5 else "强" if cost_score == 4 else "中等"
+    print(f"│ 成本优势        │ {'⭐' * cost_score:<5}   │ {cost_analysis:20} (规模经济/效率) │")
+    
+    switching_score = data['moat']['scores']['switching']
+    switching_analysis = "极强" if switching_score == 5 else "强" if switching_score == 4 else "中等"
+    print(f"│ 切换成本        │ {'⭐' * switching_score:<5}   │ {switching_analysis:20} (用户粘性/数据) │")
+    
+    print(f"└─────────────────┴──────────┴─────────────────────────────────────┘")
     print(f"• 综合评级: {data['moat']['rating']}护城河 ({data['moat']['average']}/5.0)")
     
-    # 基本面
-    print(f"\n【基本面】")
-    if data['fundamentals']['roe']:
-        print(f"• ROE: {data['fundamentals']['roe']}% | ROA: {data['fundamentals']['roa']}%")
-        print(f"• 毛利率: {data['fundamentals']['gross_margin']}% | 净利率: {data['fundamentals']['net_margin']}%")
-    if data['cashflow']['fcf_b']:
-        print(f"• 自由现金流: ${data['cashflow']['fcf_b']}B | 每股FCF: ${data['cashflow']['fcf_per_share']}")
+    if data['moat']['average'] >= 4.5:
+        moat_conclusion = "✅ 极宽护城河，具备长期竞争优势"
+    elif data['moat']['average'] >= 4:
+        moat_conclusion = "✅ 宽阔护城河，竞争优势明显"
+    elif data['moat']['average'] >= 3:
+        moat_conclusion = "⏸️ 中等护城河，竞争优势一般"
+    else:
+        moat_conclusion = "⚠️ 护城河较窄，竞争优势弱"
+    print(f"• 结论: {moat_conclusion}")
     
-    # 增长
-    print(f"\n【增长预期】")
-    print(f"• EPS增长: {data['growth']['eps_growth_1y']}% (1年) | {data['growth']['eps_growth_2y']}% (2年)")
-    print(f"• 营收增长: {data['growth']['revenue_growth']}%")
+    # 未来价值表格
+    print(f"\n【七、未来1-5年价值估算 (基于DCF模型)】")
+    print(f"┌──────┬────────────┬──────────────┬─────────────────┐")
+    print(f"│ 年限 │ 目标价值   │ 年化回报率   │ 评价            │")
+    print(f"├──────┼────────────┼──────────────┼─────────────────┤")
     
-    # 未来价值
-    print(f"\n【未来1-5年价值估算】")
     for year, value in data['future_value'].items():
-        print(f"• {year}年后: ${value['value']} (年化回报: {value['annual_return']:+}%)")
+        target = value['value']
+        ret = value['annual_return']
+        
+        if ret > 15:
+            eval_text = "优秀"
+        elif ret > 10:
+            eval_text = "良好"
+        elif ret > 5:
+            eval_text = "一般"
+        elif ret > -5:
+            eval_text = "持平"
+        else:
+            eval_text = "下跌"
+        
+        print(f"│ {year}年  │ ${target:>8.2f}  │ {ret:>+6.1f}%       │ {eval_text:14} │")
     
-    # 五维评分
-    print(f"\n【五维评分】")
-    print(f"1. 估值/安全边际: {'⭐' * data['scores']['valuation']}")
-    print(f"2. 护城河: {'⭐' * data['scores']['moat']}")
-    print(f"3. 现金流: {'⭐' * data['scores']['fcf']}")
-    print(f"4. 盈利能力: {'⭐' * data['scores']['profitability']}")
-    print(f"5. 增长潜力: {'⭐' * data['scores']['growth']}")
-    print(f"   综合评分: {data['scores']['total']}/5.0")
+    print(f"└──────┴────────────┴──────────────┴─────────────────┘")
+    
+    # 五维评分总结
+    print(f"\n【八、五维评分总结】")
+    print(f"┌─────────────────┬──────────┬─────────────────────────────────────┐")
+    print(f"│ 维度            │ 评分     │ 说明                                │")
+    print(f"├─────────────────┼──────────┼─────────────────────────────────────┤")
+    print(f"│ 1. 估值/安全边际│ {'⭐' * data['scores']['valuation']:<5}   │ 买入价格vs内在价值                  │")
+    print(f"│ 2. 护城河       │ {'⭐' * data['scores']['moat']:<5}   │ 竞争优势                            │")
+    print(f"│ 3. 现金流       │ {'⭐' * data['scores']['fcf']:<5}   │ 真实盈利能力                        │")
+    print(f"│ 4. 盈利能力     │ {'⭐' * data['scores']['profitability']:<5}   │ ROE/ROA/利润率                      │")
+    print(f"│ 5. 增长潜力     │ {'⭐' * data['scores']['growth']:<5}   │ 未来增长空间                        │")
+    print(f"├─────────────────┼──────────┼─────────────────────────────────────┤")
+    print(f"│ 综合评分        │ {data['scores']['total']:.1f}/5.0  │                                     │")
+    print(f"└─────────────────┴──────────┴─────────────────────────────────────┘")
     
     # 投资评级
     print(f"\n【投资评级】")
