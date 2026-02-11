@@ -1,0 +1,575 @@
+#!/usr/bin/env python3
+"""
+Value Investing Stock Analyzer - 价值投资股票分析工具
+巴菲特 + 段永平 投资理念
+Usage: analyze-value <TICKER> [options]
+"""
+
+import sys
+import json
+import math
+from datetime import datetime
+from typing import Dict, List, Tuple
+
+def calculate_dcf(fcf_current: float, growth_years: List[float], terminal_growth: float, wacc: float, shares: float) -> Dict:
+    """
+    三阶段DCF估值模型 (Buffett风格)
+    
+    阶段1: 高成长 (3-5年)
+    阶段2: 中成长 (3-5年)  
+    阶段3: 永续增长
+    """
+    if fcf_current <= 0 or shares <= 0:
+        return {"intrinsic_value": 0, "sensitivity": []}
+    
+    # 计算各阶段现值
+    fcf = fcf_current
+    pv_total = 0
+    year = 0
+    
+    # 阶段1: 高成长
+    for growth in growth_years[:3]:  # 前3年高增长
+        year += 1
+        fcf *= (1 + growth)
+        pv_total += fcf / ((1 + wacc) ** year)
+    
+    # 阶段2: 中成长
+    for growth in growth_years[3:5]:  # 接下来2年中增长
+        year += 1
+        fcf *= (1 + growth)
+        pv_total += fcf / ((1 + wacc) ** year)
+    
+    # 阶段3: 永续增长
+    if year > 0:
+        terminal_fcf = fcf * (1 + terminal_growth)
+        terminal_value = terminal_fcf / (wacc - terminal_growth)
+        pv_terminal = terminal_value / ((1 + wacc) ** year)
+        pv_total += pv_terminal
+    
+    intrinsic_value = pv_total / shares
+    
+    # 敏感性分析
+    sensitivity = []
+    for w in [wacc - 0.02, wacc, wacc + 0.02]:
+        for g in [terminal_growth - 0.005, terminal_growth, terminal_growth + 0.005]:
+            if w > g:
+                # 重新计算
+                fcf_sens = fcf_current
+                pv_sens = 0
+                for i, growth in enumerate(growth_years[:3]):
+                    fcf_sens *= (1 + growth)
+                    pv_sens += fcf_sens / ((1 + w) ** (i + 1))
+                for i, growth in enumerate(growth_years[3:5]):
+                    fcf_sens *= (1 + growth)
+                    pv_sens += fcf_sens / ((1 + w) ** (i + 4))
+                terminal = fcf_sens * (1 + g) / (w - g) / ((1 + w) ** 5)
+                pv_sens += terminal
+                iv = pv_sens / shares
+                sensitivity.append({"wacc": round(w*100, 1), "growth": round(g*100, 1), "value": round(iv, 2)})
+    
+    return {
+        "intrinsic_value": round(intrinsic_value, 2),
+        "sensitivity": sensitivity
+    }
+
+
+def analyze_moat(roe: float, gross_margin: float, net_margin: float, market_cap: float, 
+                 industry: str, revenue_growth: float) -> Dict:
+    """
+    护城河五维分析 (段永平风格)
+    """
+    moat_scores = {}
+    
+    # 1. 网络效应护城河
+    if market_cap > 500e9:  # 大型平台
+        moat_scores["network"] = 5
+    elif market_cap > 100e9:
+        moat_scores["network"] = 4
+    else:
+        moat_scores["network"] = 3
+    
+    # 2. 品牌护城河 (通过ROE和毛利率判断)
+    if roe > 0.25 and gross_margin > 0.4:
+        moat_scores["brand"] = 5
+    elif roe > 0.2 and gross_margin > 0.35:
+        moat_scores["brand"] = 4
+    elif roe > 0.15:
+        moat_scores["brand"] = 3
+    else:
+        moat_scores["brand"] = 2
+    
+    # 3. 技术护城河 (通过增长率和行业判断)
+    tech_industries = ['Technology', 'Communication Services', 'Healthcare']
+    if industry in tech_industries and revenue_growth > 0.15:
+        moat_scores["tech"] = 5
+    elif industry in tech_industries:
+        moat_scores["tech"] = 4
+    else:
+        moat_scores["tech"] = 3
+    
+    # 4. 成本优势护城河 (通过净利率判断)
+    if net_margin > 0.2:
+        moat_scores["cost"] = 5
+    elif net_margin > 0.15:
+        moat_scores["cost"] = 4
+    elif net_margin > 0.1:
+        moat_scores["cost"] = 3
+    else:
+        moat_scores["cost"] = 2
+    
+    # 5. 切换成本护城河 (通过ROE稳定性判断)
+    if roe > 0.2:
+        moat_scores["switching"] = 5
+    elif roe > 0.15:
+        moat_scores["switching"] = 4
+    else:
+        moat_scores["switching"] = 3
+    
+    avg_moat = sum(moat_scores.values()) / len(moat_scores)
+    
+    return {
+        "scores": moat_scores,
+        "average": round(avg_moat, 1),
+        "rating": "极宽" if avg_moat >= 4.5 else "宽阔" if avg_moat >= 4 else "中等" if avg_moat >= 3 else "狭窄"
+    }
+
+
+def calculate_future_value(current_price: float, intrinsic_value: float, 
+                          growth_rate: float, years: int) -> Dict:
+    """
+    计算未来1-5年的价值估算
+    """
+    results = {}
+    
+    for year in range(1, years + 1):
+        # 基于增长率和内在价值的复合增长
+        future_value = intrinsic_value * ((1 + growth_rate) ** year)
+        
+        # 年化回报率
+        if current_price > 0:
+            annual_return = ((future_value / current_price) ** (1/year) - 1) * 100
+        else:
+            annual_return = 0
+        
+        results[year] = {
+            "value": round(future_value, 2),
+            "annual_return": round(annual_return, 1)
+        }
+    
+    return results
+
+
+def value_investing_analysis(ticker: str) -> Dict:
+    """
+    价值投资分析 (巴菲特 + 段永平 风格)
+    """
+    try:
+        from yahooquery import Ticker
+    except ImportError:
+        print("Error: yahooquery not installed. Run: pip install yahooquery")
+        sys.exit(1)
+    
+    print(f"🔍 正在进行价值投资分析: {ticker}...")
+    print("💡 理念: 买公司，不是买股票 | 和时间做朋友 | 左侧交易\n")
+    
+    stock = Ticker(ticker)
+    
+    # 基础数据
+    price_data = stock.price.get(ticker, {})
+    stats_data = stock.key_stats.get(ticker, {})
+    financial = stock.financial_data.get(ticker, {})
+    profile = stock.asset_profile.get(ticker, {})
+    cashflow = stock.cash_flow(frequency='a')
+    income = stock.income_statement(frequency='a')
+    earnings_trend = stock.earnings_trend
+    
+    current_price = price_data.get('regularMarketPrice', 0)
+    market_cap = price_data.get('marketCap', 0)
+    shares = stats_data.get('sharesOutstanding', 0)
+    
+    high_52w = price_data.get('fiftyTwoWeekHigh', current_price * 1.2)
+    low_52w = price_data.get('fiftyTwoWeekLow', current_price * 0.8)
+    
+    # 财务指标
+    roe = financial.get('returnOnEquity', 0)
+    roa = financial.get('returnOnAssets', 0)
+    gross_margin = financial.get('grossMargins', 0)
+    operating_margin = financial.get('operatingMargins', 0)
+    net_margin = financial.get('profitMargins', 0)
+    
+    forward_pe = stats_data.get('forwardPE', 0)
+    pb = stats_data.get('priceToBook', 0)
+    
+    # 获取FCF (尝试多种方式)
+    fcf = 0
+    ocf = 0
+    capex = 0
+    
+    if cashflow is not None and not cashflow.empty:
+        # 尝试获取FCF
+        for col in cashflow.columns:
+            if 'FreeCashFlow' in cashflow.index:
+                fcf_val = cashflow.loc['FreeCashFlow', col]
+                if fcf_val and fcf_val == fcf_val and fcf_val != 0:
+                    fcf = fcf_val
+                    break
+        
+        # 如果没有FCF，用OCF - Capex计算
+        if fcf == 0:
+            for col in cashflow.columns:
+                if 'OperatingCashFlow' in cashflow.index:
+                    ocf_val = cashflow.loc['OperatingCashFlow', col]
+                    if ocf_val and ocf_val == ocf_val:
+                        ocf = ocf_val
+                        break
+                if 'CapitalExpenditure' in cashflow.index:
+                    capex_val = cashflow.loc['CapitalExpenditure', col]
+                    if capex_val and capex_val == capex_val:
+                        capex = abs(capex_val)  # Capex通常是负数
+                        break
+            
+            if ocf > 0:
+                fcf = ocf - capex
+    
+    # 如果还是获取不到，用净利润估算
+    if fcf == 0 and net_margin and income is not None and not income.empty:
+        for col in income.columns:
+            if 'NetIncome' in income.index:
+                net_income = income.loc['NetIncome', col]
+                if net_income and net_income == net_income and net_income > 0:
+                    # FCF ≈ 净利润 + 折旧 - 资本支出 (简化)
+                    fcf = net_income * 0.7  # 保守估计
+                    break
+    
+    fcf_per_share = fcf / shares if shares else 0
+    
+    # 增长预期
+    eps_growth_1y = 0
+    eps_growth_2y = 0
+    revenue_growth = 0
+    
+    if earnings_trend:
+        trend_data = earnings_trend.get(ticker, {}).get('trend', [])
+        for item in trend_data:
+            period = item.get('period')
+            if period == '0y':
+                eps_growth_1y = item.get('growth', 0)
+                revenue_growth = item.get('revenueEstimate', {}).get('growth', 0)
+            elif period == '+1y':
+                eps_growth_2y = item.get('growth', 0)
+    
+    # 护城河分析
+    moat = analyze_moat(roe, gross_margin, net_margin, market_cap, 
+                        profile.get('sector', ''), revenue_growth)
+    
+    # DCF估值 (三阶段) - 使用保守的FCF估计
+    fcf_for_dcf = fcf if fcf > 0 else market_cap * 0.03  # 如果获取不到，用市值的3%估算
+    
+    growth_years = [eps_growth_1y if eps_growth_1y > 0 else 0.1,
+                    eps_growth_1y if eps_growth_1y > 0 else 0.1,
+                    eps_growth_2y if eps_growth_2y > 0 else 0.08,
+                    0.08, 0.05]  # 5年增长假设
+    
+    dcf_result = calculate_dcf(fcf_for_dcf, growth_years, 0.025, 0.09, shares)
+    intrinsic_value = dcf_result["intrinsic_value"]
+    
+    # 如果DCF计算失败，使用简化估值
+    if intrinsic_value <= 0:
+        # 简化估值：P/E法
+        if forward_pe > 0 and eps_growth_1y > 0:
+            # 合理P/E = 增长率 * 100
+            fair_pe = eps_growth_1y * 100 * 1.5  # 给予50%溢价
+            eps_estimate = current_price / forward_pe * (1 + eps_growth_1y)
+            intrinsic_value = eps_estimate * fair_pe
+        else:
+            intrinsic_value = current_price * 1.2  # 保守估计
+    
+    # 安全边际
+    margin_of_safety = ((intrinsic_value - current_price) / intrinsic_value * 100) if intrinsic_value > 0 else 0
+    
+    # 未来价值估算
+    avg_growth = (eps_growth_1y + eps_growth_2y) / 2 if eps_growth_1y and eps_growth_2y else 0.1
+    iv_for_future = intrinsic_value if intrinsic_value > 0 else current_price * 1.2
+    future_values = calculate_future_value(current_price, iv_for_future, avg_growth, 5)
+    
+    # 左侧交易价格区间
+    first_batch_max = min(current_price * 1.05, intrinsic_value * 0.9)
+    first_batch_min = current_price * 0.95
+    second_batch_max = current_price * 0.95
+    second_batch_min = max(current_price * 0.85, low_52w * 1.1)
+    heavy_max = second_batch_min
+    heavy_min = max(low_52w, intrinsic_value * 0.7)
+    extreme = intrinsic_value * 0.6
+    
+    # 五维评分
+    score_valuation = 5 if margin_of_safety > 30 else 4 if margin_of_safety > 15 else 3 if margin_of_safety > 0 else 2
+    score_moat = int(moat["average"])
+    score_fcf = 5 if fcf > 0 and fcf/market_cap > 0.03 else 4 if fcf > 0 else 3
+    score_profit = 5 if roe > 0.2 else 4 if roe > 0.15 else 3 if roe > 0.1 else 2
+    score_growth = 5 if avg_growth > 0.2 else 4 if avg_growth > 0.15 else 3 if avg_growth > 0.1 else 2
+    
+    total_score = (score_valuation + score_moat + score_fcf + score_profit + score_growth) / 5
+    
+    # 投资评级
+    if total_score >= 4.5 and margin_of_safety > 20:
+        rating = "STRONG BUY ⭐⭐⭐⭐⭐"
+    elif total_score >= 4 and margin_of_safety > 10:
+        rating = "BUY ⭐⭐⭐⭐"
+    elif total_score >= 3.5:
+        rating = "HOLD ⭐⭐⭐"
+    else:
+        rating = "AVOID ⭐⭐"
+    
+    return {
+        "ticker": ticker,
+        "name": profile.get('shortName', ticker),
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        
+        "price": {
+            "current": round(current_price, 2),
+            "market_cap_b": round(market_cap / 1e9, 2),
+            "week_52_high": round(high_52w, 2),
+            "week_52_low": round(low_52w, 2),
+            "position_pct": round((current_price - low_52w) / (high_52w - low_52w) * 100, 1) if high_52w != low_52w else 0,
+        },
+        
+        "valuation": {
+            "forward_pe": round(forward_pe, 1),
+            "pb": round(pb, 2),
+            "intrinsic_value": intrinsic_value,
+            "margin_of_safety": round(margin_of_safety, 1),
+        },
+        
+        "fundamentals": {
+            "roe": round(roe * 100, 1) if roe else None,
+            "roa": round(roa * 100, 1) if roa else None,
+            "gross_margin": round(gross_margin * 100, 1) if gross_margin else None,
+            "net_margin": round(net_margin * 100, 1) if net_margin else None,
+        },
+        
+        "cashflow": {
+            "fcf_b": round(fcf / 1e9, 2) if fcf else None,
+            "fcf_per_share": round(fcf_per_share, 2),
+            "fcf_yield": round(fcf_per_share / current_price * 100, 2) if current_price else 0,
+        },
+        
+        "growth": {
+            "eps_growth_1y": round(eps_growth_1y * 100, 1),
+            "eps_growth_2y": round(eps_growth_2y * 100, 1),
+            "revenue_growth": round(revenue_growth * 100, 1),
+        },
+        
+        "moat": moat,
+        
+        "dcf": dcf_result,
+        
+        "future_value": future_values,
+        
+        "entry_points": {
+            "first_batch": (round(first_batch_min, 2), round(first_batch_max, 2)),
+            "second_batch": (round(second_batch_min, 2), round(second_batch_max, 2)),
+            "heavy": (round(heavy_min, 2), round(heavy_max, 2)),
+            "extreme": round(extreme, 2),
+        },
+        
+        "scores": {
+            "valuation": score_valuation,
+            "moat": score_moat,
+            "fcf": score_fcf,
+            "profitability": score_profit,
+            "growth": score_growth,
+            "total": round(total_score, 1),
+        },
+        
+        "rating": rating,
+        "sector": profile.get('sector', 'N/A'),
+        "industry": profile.get('industry', 'N/A'),
+        "ceo": profile.get('companyOfficers', [{}])[0].get('name', 'N/A') if profile.get('companyOfficers') else 'N/A',
+    }
+
+
+def print_value_report(data: Dict):
+    """打印价值投资分析报告"""
+    print("\n" + "=" * 75)
+    print(f"📊 {data['name']} ({data['ticker']}) 价值投资分析报告")
+    print("=" * 75)
+    print(f"💡 理念: 买公司，不是买股票 | 和时间做朋友 | 左侧交易")
+    print("=" * 75)
+    
+    # 核心数据
+    print(f"\n【核心数据】")
+    print(f"• 股价: ${data['price']['current']} | 市值: ${data['price']['market_cap_b']:.1f}B")
+    print(f"• 52周区间: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}")
+    print(f"• Forward P/E: {data['valuation']['forward_pe']}x | P/B: {data['valuation']['pb']}x")
+    
+    # 内在价值与安全边际
+    print(f"\n【巴菲特式估值】")
+    print(f"• DCF内在价值: ${data['valuation']['intrinsic_value']}")
+    print(f"• 安全边际: {data['valuation']['margin_of_safety']:+.1f}%")
+    if data['valuation']['margin_of_safety'] > 20:
+        print(f"  ✅ 安全边际充足 (>20%)，符合巴菲特标准")
+    elif data['valuation']['margin_of_safety'] > 10:
+        print(f"  ⏸️ 安全边际一般 (10-20%)，可小仓位试探")
+    else:
+        print(f"  ⚠️ 安全边际不足 (<10%)，建议等待")
+    
+    # 护城河
+    print(f"\n【护城河分析】(段永平五维)")
+    print(f"• 网络效应: {'⭐' * data['moat']['scores']['network']}")
+    print(f"• 品牌护城河: {'⭐' * data['moat']['scores']['brand']}")
+    print(f"• 技术护城河: {'⭐' * data['moat']['scores']['tech']}")
+    print(f"• 成本优势: {'⭐' * data['moat']['scores']['cost']}")
+    print(f"• 切换成本: {'⭐' * data['moat']['scores']['switching']}")
+    print(f"• 综合评级: {data['moat']['rating']}护城河 ({data['moat']['average']}/5.0)")
+    
+    # 基本面
+    print(f"\n【基本面】")
+    if data['fundamentals']['roe']:
+        print(f"• ROE: {data['fundamentals']['roe']}% | ROA: {data['fundamentals']['roa']}%")
+        print(f"• 毛利率: {data['fundamentals']['gross_margin']}% | 净利率: {data['fundamentals']['net_margin']}%")
+    if data['cashflow']['fcf_b']:
+        print(f"• 自由现金流: ${data['cashflow']['fcf_b']}B | 每股FCF: ${data['cashflow']['fcf_per_share']}")
+    
+    # 增长
+    print(f"\n【增长预期】")
+    print(f"• EPS增长: {data['growth']['eps_growth_1y']}% (1年) | {data['growth']['eps_growth_2y']}% (2年)")
+    print(f"• 营收增长: {data['growth']['revenue_growth']}%")
+    
+    # 未来价值
+    print(f"\n【未来1-5年价值估算】")
+    for year, value in data['future_value'].items():
+        print(f"• {year}年后: ${value['value']} (年化回报: {value['annual_return']:+}%)")
+    
+    # 五维评分
+    print(f"\n【五维评分】")
+    print(f"1. 估值/安全边际: {'⭐' * data['scores']['valuation']}")
+    print(f"2. 护城河: {'⭐' * data['scores']['moat']}")
+    print(f"3. 现金流: {'⭐' * data['scores']['fcf']}")
+    print(f"4. 盈利能力: {'⭐' * data['scores']['profitability']}")
+    print(f"5. 增长潜力: {'⭐' * data['scores']['growth']}")
+    print(f"   综合评分: {data['scores']['total']}/5.0")
+    
+    # 投资评级
+    print(f"\n【投资评级】")
+    print(f"🎯 {data['rating']}")
+    
+    # 左侧交易
+    print(f"\n【左侧交易执行计划】(目标仓位: 5-10%)")
+    print(f"• 第一批 (试仓20%): ${data['entry_points']['first_batch'][0]} - ${data['entry_points']['first_batch'][1]}")
+    print(f"• 第二批 (加仓30%): ${data['entry_points']['second_batch'][0]} - ${data['entry_points']['second_batch'][1]}")
+    print(f"• 重仓区 (35%): ${data['entry_points']['heavy'][0]} - ${data['entry_points']['heavy'][1]}")
+    print(f"• 极端区 (15%): <${data['entry_points']['extreme']}")
+    
+    # "时间是朋友"逻辑
+    print(f"\n【\"时间是朋友\"持有逻辑】(Buffett/Duan式)")
+    print(f"1. {data['moat']['rating']}护城河保护企业长期竞争力")
+    if data['fundamentals']['roe'] and data['fundamentals']['roe'] > 15:
+        print(f"2. ROE {data['fundamentals']['roe']}% 显示优秀的资本回报能力")
+    if data['cashflow']['fcf_b'] and data['cashflow']['fcf_b'] > 0:
+        print(f"3. ${data['cashflow']['fcf_b']}B 年自由现金流，为股东创造价值")
+    print(f"4. 以低于内在价值 {abs(data['valuation']['margin_of_safety']):.0f}% 的价格买入，安全边际充足")
+    print(f"5. 持有3-5年，让企业价值复合增长")
+    
+    print("\n" + "=" * 75)
+
+
+def save_value_report(data: Dict, filename: str = None):
+    """保存价值投资报告为Markdown"""
+    if not filename:
+        filename = f"./{data['ticker']}-value-analysis-{data['date']}.md"
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(f"# {data['name']} ({data['ticker']}) 价值投资分析报告\n\n")
+        f.write(f"> 💡 投资理念: 买公司，不是买股票 | 和时间做朋友 | 左侧交易\n\n")
+        f.write(f"**分析日期**: {data['date']}\n\n")
+        
+        f.write("## 📊 核心数据\n\n")
+        f.write(f"- **股价**: ${data['price']['current']}\n")
+        f.write(f"- **市值**: ${data['price']['market_cap_b']:.1f}B\n")
+        f.write(f"- **52周区间**: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}\n")
+        f.write(f"- **Forward P/E**: {data['valuation']['forward_pe']}x\n\n")
+        
+        f.write("## 💰 巴菲特式估值\n\n")
+        f.write(f"- **DCF内在价值**: ${data['valuation']['intrinsic_value']}\n")
+        f.write(f"- **安全边际**: {data['valuation']['margin_of_safety']:+.1f}%\n")
+        f.write(f"- **评级**: {'✅ 安全边际充足' if data['valuation']['margin_of_safety'] > 20 else '⏸️ 安全边际一般' if data['valuation']['margin_of_safety'] > 10 else '⚠️ 安全边际不足'}\n\n")
+        
+        f.write("## 🏰 护城河分析 (段永平五维)\n\n")
+        f.write("| 维度 | 评分 |\n")
+        f.write("|------|------|\n")
+        for key, score in data['moat']['scores'].items():
+            name = {"network": "网络效应", "brand": "品牌护城河", "tech": "技术护城河", 
+                    "cost": "成本优势", "switching": "切换成本"}.get(key, key)
+            f.write(f"| {name} | {'⭐' * score} |\n")
+        f.write(f"\n**综合评级**: {data['moat']['rating']}护城河 ({data['moat']['average']}/5.0)\n\n")
+        
+        f.write("## 📈 未来1-5年价值估算\n\n")
+        f.write("| 年限 | 目标价 | 年化回报 |\n")
+        f.write("|------|--------|----------|\n")
+        for year, value in data['future_value'].items():
+            f.write(f"| {year}年 | ${value['value']} | {value['annual_return']:+.1f}% |\n")
+        f.write("\n")
+        
+        f.write("## 🎯 投资评级\n\n")
+        f.write(f"**{data['rating']}**\n\n")
+        
+        f.write("## 📋 左侧交易计划\n\n")
+        f.write("| 层级 | 价格区间 | 仓位 |\n")
+        f.write("|------|----------|------|\n")
+        f.write(f"| 第一批(试仓) | ${data['entry_points']['first_batch'][0]}-${data['entry_points']['first_batch'][1]} | 20% |\n")
+        f.write(f"| 第二批(加仓) | ${data['entry_points']['second_batch'][0]}-${data['entry_points']['second_batch'][1]} | 30% |\n")
+        f.write(f"| 重仓区 | ${data['entry_points']['heavy'][0]}-${data['entry_points']['heavy'][1]} | 35% |\n")
+        f.write(f"| 极端区 | <${data['entry_points']['extreme']} | 15% |\n\n")
+        
+        f.write('## 🕰️ "时间是朋友"持有逻辑\n\n')
+        f.write(f"1. {data['moat']['rating']}护城河保护企业长期竞争力\n")
+        if data['fundamentals']['roe']:
+            f.write(f"2. ROE {data['fundamentals']['roe']}% 显示优秀的资本回报能力\n")
+        f.write(f"3. 以低于内在价值的价格买入，安全边际充足\n")
+        f.write(f"4. 持有3-5年，让企业价值复合增长\n")
+        f.write(f"5. 忽略短期波动，专注长期价值\n")
+    
+    print(f"\n💾 报告已保存: {filename}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Value Investing Stock Analyzer")
+        print("巴菲特 + 段永平 投资理念")
+        print("\nUsage: analyze-value <TICKER> [options]")
+        print("Options:")
+        print("  --save       Save report to file")
+        print("  --format md  Output as markdown")
+        print("  --format json Output as JSON")
+        print("\nExamples:")
+        print("  analyze-value AAPL")
+        print("  analyze-value AMZN --save")
+        print("  analyze-value 1810.HK --format md")
+        sys.exit(1)
+    
+    ticker = sys.argv[1].upper()
+    save = '--save' in sys.argv
+    format_md = '--format md' in sys.argv or '-f md' in sys.argv
+    format_json = '--format json' in sys.argv or '-f json' in sys.argv
+    
+    try:
+        result = value_investing_analysis(ticker)
+        
+        if format_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        elif format_md:
+            save_value_report(result, f"{ticker}-value-analysis.md")
+        else:
+            print_value_report(result)
+            if save:
+                save_value_report(result)
+    
+    except Exception as e:
+        print(f"Error analyzing {ticker}: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
