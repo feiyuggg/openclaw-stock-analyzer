@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""
+Stock Analyzer - 自动化股票五维投资价值分析
+Usage: analyze-stock <TICKER> [options]
+"""
+
+import sys
+import json
+from datetime import datetime
+from typing import Dict, Optional
+
+def analyze_stock(ticker: str, save: bool = False, format_type: str = "text") -> Dict:
+    """分析股票并返回结果字典"""
+    
+    try:
+        from yahooquery import Ticker
+    except ImportError:
+        print("Error: yahooquery not installed. Run: pip install yahooquery")
+        sys.exit(1)
+    
+    print(f"🔍 正在分析 {ticker}...")
+    
+    # 获取数据
+    stock = Ticker(ticker)
+    
+    price_data = stock.price.get(ticker, {})
+    stats_data = stock.key_stats.get(ticker, {})
+    financial = stock.financial_data.get(ticker, {})
+    profile = stock.asset_profile.get(ticker, {})
+    cashflow = stock.cash_flow(frequency='a')
+    earnings_trend = stock.earnings_trend
+    recommendations = stock.recommendation_trend
+    
+    # 基础数据
+    current_price = price_data.get('regularMarketPrice', 0)
+    market_cap = price_data.get('marketCap', 0)
+    shares = stats_data.get('sharesOutstanding', 0)
+    
+    high_52w = price_data.get('fiftyTwoWeekHigh', current_price * 1.2)
+    low_52w = price_data.get('fiftyTwoWeekLow', current_price * 0.8)
+    
+    # 估值指标
+    forward_pe = stats_data.get('forwardPE', 0)
+    trailing_pe = stats_data.get('trailingPE', 0)
+    pb = stats_data.get('priceToBook', 0)
+    ev_ebitda = stats_data.get('enterpriseToEbitda', 0)
+    
+    # 盈利能力
+    gross_margin = financial.get('grossMargins', 0)
+    operating_margin = financial.get('operatingMargins', 0)
+    net_margin = financial.get('profitMargins', 0)
+    roe = financial.get('returnOnEquity', 0)
+    roa = financial.get('returnOnAssets', 0)
+    
+    # FCF
+    fcf = 0
+    if cashflow is not None and not cashflow.empty:
+        for col in cashflow.columns:
+            fcf_val = cashflow.loc['FreeCashFlow', col] if 'FreeCashFlow' in cashflow.index else None
+            if fcf_val and fcf_val == fcf_val:  # not NaN
+                fcf = fcf_val
+                break
+    
+    fcf_per_share = fcf / shares if shares else 0
+    p_fcf = current_price / fcf_per_share if fcf_per_share else 0
+    
+    # 盈利预测
+    eps_growth = 0
+    revenue_growth = 0
+    if earnings_trend:
+        trend_data = earnings_trend.get(ticker, {}).get('trend', [])
+        for item in trend_data:
+            if item.get('period') == '0y':
+                eps_growth = item.get('growth', 0)
+                revenue_growth = item.get('revenueEstimate', {}).get('growth', 0)
+                break
+    
+    # PEG
+    peg = forward_pe / (eps_growth * 100) if eps_growth else 0
+    
+    # 分析师评级
+    target_mean = financial.get('targetMeanPrice', 0)
+    target_high = financial.get('targetHighPrice', 0)
+    target_low = financial.get('targetLowPrice', 0)
+    
+    # 52周位置
+    position_pct = ((current_price - low_52w) / (high_52w - low_52w) * 100) if high_52w != low_52w else 0
+    drop_from_high = ((high_52w - current_price) / high_52w * 100) if high_52w else 0
+    
+    # DCF 简化计算
+    fcf_current = fcf if fcf else market_cap * 0.02  # 估算
+    wacc = 0.09
+    growth_5y = 0.15
+    growth_terminal = 0.025
+    
+    # 简化DCF: 5年增长 + 终值
+    pv_5y = 0
+    fcf_proj = fcf_current
+    for year in range(1, 6):
+        fcf_proj *= (1 + growth_5y)
+        pv_5y += fcf_proj / ((1 + wacc) ** year)
+    
+    terminal_fcf = fcf_proj * (1 + growth_terminal)
+    terminal_value = terminal_fcf / (wacc - growth_terminal)
+    pv_terminal = terminal_value / ((1 + wacc) ** 5)
+    
+    intrinsic_value = (pv_5y + pv_terminal) / shares if shares else 0
+    upside = ((intrinsic_value - current_price) / current_price * 100) if current_price else 0
+    
+    # 五维评分
+    score_valuation = 4 if position_pct < 50 else 3  # 估值位置
+    score_fundamental = 5 if roe > 0.2 else 4 if roe > 0.15 else 3  # 基本面
+    score_fcf = 4 if fcf > 0 else 3  # FCF
+    score_peg = 5 if peg < 1 else 4 if peg < 1.5 else 3  # PEG
+    score_dcf = 4 if upside > 15 else 3 if upside > 0 else 2  # DCF
+    
+    total_score = (score_valuation + score_fundamental + score_fcf + score_peg + score_dcf) / 5
+    
+    # 投资评级
+    if total_score >= 4.5:
+        rating = "STRONG BUY ⭐⭐⭐⭐⭐"
+    elif total_score >= 4:
+        rating = "BUY ⭐⭐⭐⭐"
+    elif total_score >= 3:
+        rating = "HOLD ⭐⭐⭐"
+    else:
+        rating = "SELL ⭐⭐"
+    
+    # 构建结果
+    result = {
+        "ticker": ticker,
+        "name": profile.get('shortName', ticker),
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        
+        "price": {
+            "current": round(current_price, 2),
+            "market_cap_b": round(market_cap / 1e9, 2),
+            "week_52_high": high_52w,
+            "week_52_low": low_52w,
+            "position_pct": round(position_pct, 1),
+            "drop_from_high": round(drop_from_high, 1),
+        },
+        
+        "valuation": {
+            "forward_pe": round(forward_pe, 1),
+            "trailing_pe": round(trailing_pe, 1) if trailing_pe else None,
+            "pb": round(pb, 2),
+            "ev_ebitda": round(ev_ebitda, 1),
+            "peg": round(peg, 2),
+        },
+        
+        "profitability": {
+            "gross_margin": round(gross_margin * 100, 1) if gross_margin else None,
+            "operating_margin": round(operating_margin * 100, 1) if operating_margin else None,
+            "net_margin": round(net_margin * 100, 1) if net_margin else None,
+            "roe": round(roe * 100, 1) if roe else None,
+            "roa": round(roa * 100, 1) if roa else None,
+        },
+        
+        "cashflow": {
+            "fcf_b": round(fcf / 1e9, 2) if fcf else None,
+            "fcf_per_share": round(fcf_per_share, 2),
+            "p_fcf": round(p_fcf, 1),
+        },
+        
+        "growth": {
+            "eps_growth": round(eps_growth * 100, 1),
+            "revenue_growth": round(revenue_growth * 100, 1),
+        },
+        
+        "analyst": {
+            "target_mean": round(target_mean, 2),
+            "target_high": round(target_high, 2),
+            "target_low": round(target_low, 2),
+            "upside": round((target_mean - current_price) / current_price * 100, 1) if target_mean else None,
+        },
+        
+        "dcf": {
+            "intrinsic_value": round(intrinsic_value, 2),
+            "upside": round(upside, 1),
+        },
+        
+        "scores": {
+            "valuation": score_valuation,
+            "fundamental": score_fundamental,
+            "fcf": score_fcf,
+            "peg": score_peg,
+            "dcf": score_dcf,
+            "total": round(total_score, 1),
+        },
+        
+        "rating": rating,
+        "sector": profile.get('sector', 'N/A'),
+        "industry": profile.get('industry', 'N/A'),
+    }
+    
+    return result
+
+
+def print_report(data: Dict):
+    """打印文本格式报告"""
+    print("\n" + "=" * 70)
+    print(f"📊 {data['name']} ({data['ticker']}) 投资分析报告")
+    print("=" * 70)
+    
+    # 核心数据
+    print("\n【核心数据】")
+    print(f"• 股价: ${data['price']['current']}")
+    print(f"• 市值: ${data['price']['market_cap_b']:.1f}B")
+    print(f"• 52周位置: {data['price']['position_pct']}% (距高点 -{data['price']['drop_from_high']}%)")
+    print(f"• Forward P/E: {data['valuation']['forward_pe']}x")
+    print(f"• PEG: {data['valuation']['peg']}")
+    
+    if data['analyst']['target_mean']:
+        print(f"• 分析师目标价: ${data['analyst']['target_mean']} ({data['analyst']['upside']:+.1f}%)")
+    
+    # 五维评分
+    print("\n【五维评分】")
+    print(f"1. 投资点位: {'⭐' * data['scores']['valuation']}")
+    print(f"2. 基本面/护城河: {'⭐' * data['scores']['fundamental']}")
+    print(f"3. FCF: {'⭐' * data['scores']['fcf']}")
+    print(f"4. PEG: {'⭐' * data['scores']['peg']}")
+    print(f"5. DCF: {'⭐' * data['scores']['dcf']}")
+    
+    # 投资评级
+    print("\n【投资评级】")
+    print(f"🎯 {data['rating']}")
+    print(f"📈 DCF内在价值: ${data['dcf']['intrinsic_value']} (Upside: {data['dcf']['upside']:+.1f}%)")
+    
+    # 入场策略
+    print("\n【左侧交易建议】")
+    current = data['price']['current']
+    low = data['price']['week_52_low']
+    
+    if data['price']['position_pct'] < 30:
+        print(f"✅ 当前处于低位区域，建议建仓")
+    elif data['price']['position_pct'] < 60:
+        print(f"⏸️ 当前处于合理区间，可分批建仓")
+    else:
+        print(f"⚠️ 当前处于高位区域，建议等待回调")
+    
+    print(f"• 第一批: ${current*0.95:.0f}-${current*1.02:.0f} (试仓20%)")
+    print(f"• 第二批: ${current*0.85:.0f}-${current*0.95:.0f} (加仓30%)")
+    print(f"• 重仓区: ${low:.0f}-${low*1.1:.0f} (重仓35%)")
+    
+    print("\n" + "=" * 70)
+
+
+def save_report(data: Dict, filename: str = None):
+    """保存为Markdown报告"""
+    if not filename:
+        filename = f"./{data['ticker']}-analysis-{data['date']}.md"
+    
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write(f"# {data['name']} ({data['ticker']}) 投资分析报告\n\n")
+        f.write(f"**分析日期**: {data['date']}\n\n")
+        
+        f.write("## 核心数据\n\n")
+        f.write(f"- **股价**: ${data['price']['current']}\n")
+        f.write(f"- **市值**: ${data['price']['market_cap_b']:.1f}B\n")
+        f.write(f"- **行业**: {data['industry']}\n")
+        f.write(f"- **Forward P/E**: {data['valuation']['forward_pe']}x\n")
+        f.write(f"- **ROE**: {data['profitability']['roe']}%\n\n")
+        
+        f.write("## 五维评分\n\n")
+        f.write(f"| 维度 | 评分 |\n")
+        f.write(f"|------|------|\n")
+        f.write(f"| 投资点位 | {'⭐' * data['scores']['valuation']} |\n")
+        f.write(f"| 基本面/护城河 | {'⭐' * data['scores']['fundamental']} |\n")
+        f.write(f"| FCF | {'⭐' * data['scores']['fcf']} |\n")
+        f.write(f"| PEG | {'⭐' * data['scores']['peg']} |\n")
+        f.write(f"| DCF | {'⭐' * data['scores']['dcf']} |\n")
+        f.write(f"| **综合** | **{data['scores']['total']}** |\n\n")
+        
+        f.write(f"## 投资评级\n\n")
+        f.write(f"**{data['rating']}**\n\n")
+        f.write(f"- DCF内在价值: ${data['dcf']['intrinsic_value']} ({data['dcf']['upside']:+.1f}%)\n")
+        if data['analyst']['target_mean']:
+            f.write(f"- 分析师目标价: ${data['analyst']['target_mean']} ({data['analyst']['upside']:+.1f}%)\n")
+    
+    print(f"\n💾 报告已保存: {filename}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: analyze-stock <TICKER> [options]")
+        print("Options:")
+        print("  --save       Save report to file")
+        print("  --format md  Output as markdown")
+        print("  --format json Output as JSON")
+        print("\nExamples:")
+        print("  analyze-stock AAPL")
+        print("  analyze-stock 1810.HK --save")
+        print("  analyze-stock AMZN --format json")
+        sys.exit(1)
+    
+    ticker = sys.argv[1].upper()
+    save = '--save' in sys.argv
+    format_md = '--format md' in sys.argv or '-f md' in sys.argv
+    format_json = '--format json' in sys.argv or '-f json' in sys.argv
+    
+    try:
+        result = analyze_stock(ticker, save=save)
+        
+        if format_json:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        elif format_md:
+            save_report(result, f"{ticker}-analysis.md")
+        else:
+            print_report(result)
+            if save:
+                save_report(result)
+    
+    except Exception as e:
+        print(f"Error analyzing {ticker}: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
