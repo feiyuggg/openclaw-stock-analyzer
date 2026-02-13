@@ -52,6 +52,19 @@ analyze-value TSLA --save
 analyze-value META --format md
 ```
 
+### 3. analyze-earnings - 财报解读工作流（官方源优先）
+```bash
+# 生成任意公司的财报解读工作流报告（可复用）
+analyze-earnings COIN
+analyze-earnings AAPL --out /tmp/aapl-earnings.md
+
+# 同时输出原始JSON，方便后续自动化处理
+analyze-earnings MSFT --json
+
+# 指定公司名（用于IR入口候选URL）
+analyze-earnings BRK.B --company "Berkshire Hathaway"
+```
+
 ## analyze-value 特色功能
 
 ### 1. 前瞻市盈率 (Forward P/E) 详细分析
@@ -207,6 +220,8 @@ export PATH="$HOME/.openclaw/workspace/skills/stock-analyzer:$PATH"
 ## 数据来源
 
 - Yahoo Finance (通过 yahooquery)
+- SEC EDGAR submissions API（用于最新8-K/10-Q/10-K清单；如被限流会在报告中标注）
+- 公司 Investor Relations 页面（通过工作流中的候选入口 + 浏览器人工核验）
 - 实时股价、财务数据、分析师预测
 
 ## 免责声明

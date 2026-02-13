@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""
+Earnings Workflow Analyzer
+Usage: analyze-earnings <TICKER> [--company "Company Name"] [--out report.md]
+"""
+
+import argparse
+import datetime as dt
+import json
+import re
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+
+import requests
+
+
+def _safe_get(d: Dict[str, Any], *keys, default=None):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(k)
+        if cur is None:
+            return default
+    return cur
+
+
+def fetch_yahoo_block(ticker: str) -> Dict[str, Any]:
+    try:
+        from yahooquery import Ticker
+    except ImportError as e:
+        raise RuntimeError("yahooquery is required: pip install yahooquery") from e
+
+    t = Ticker(ticker)
+    price = t.price.get(ticker, {})
+    profile = t.asset_profile.get(ticker, {})
+    stats = t.key_stats.get(ticker, {})
+    fin = t.financial_data.get(ticker, {})
+    cal = t.calendar_events.get(ticker, {})
+    trend = t.earnings_trend.get(ticker, {})
+
+    earnings_date = _safe_get(cal, "earnings", "earningsDate", default=[])
+    if isinstance(earnings_date, list):
+        earnings_date = earnings_date[0] if earnings_date else None
+
+    trend_items = trend.get("trend", []) if isinstance(trend, dict) else []
+
+    return {
+        "meta": {
+            "company_name": price.get("longName") or price.get("shortName")
+        },
+        "price": {
+            "current": price.get("regularMarketPrice"),
+            "previous_close": price.get("regularMarketPreviousClose"),
+            "day_high": price.get("regularMarketDayHigh"),
+            "day_low": price.get("regularMarketDayLow"),
+            "high_52w": price.get("fiftyTwoWeekHigh"),
+            "low_52w": price.get("fiftyTwoWeekLow"),
+            "market_cap": price.get("marketCap"),
+            "currency": price.get("currency") or "USD",
+        },
+        "valuation": {
+            "forward_pe": stats.get("forwardPE"),
+            "trailing_pe": stats.get("trailingPE"),
+            "price_to_book": stats.get("priceToBook"),
+            "peg": stats.get("pegRatio"),
+            "beta": stats.get("beta"),
+        },
+        "financial": {
+            "revenue_growth": fin.get("revenueGrowth"),
+            "gross_margin": fin.get("grossMargins"),
+            "operating_margin": fin.get("operatingMargins"),
+            "profit_margin": fin.get("profitMargins"),
+            "free_cashflow": fin.get("freeCashflow"),
+            "operating_cashflow": fin.get("operatingCashflow"),
+            "total_cash": fin.get("totalCash"),
+            "total_debt": fin.get("totalDebt"),
+            "roe": fin.get("returnOnEquity"),
+        },
+        "earnings": {
+            "earnings_date": earnings_date,
+            "trend": trend_items,
+        },
+    }
+
+
+def fetch_sec_block(ticker: str) -> Dict[str, Any]:
+    headers = {"User-Agent": "openclaw-earnings-workflow/1.0 (contact: local-user)"}
+
+    try:
+        m = requests.get("https://www.sec.gov/files/company_tickers.json", headers=headers, timeout=30)
+        m.raise_for_status()
+        ticker_map = m.json()
+    except Exception as e:
+        return {"error": f"SEC ticker map fetch failed: {e}"}
+
+    cik = None
+    company = None
+    for _, row in ticker_map.items():
+        if str(row.get("ticker", "")).upper() == ticker.upper():
+            cik = int(row["cik_str"])
+            company = row.get("title")
+            break
+
+    if cik is None:
+        return {"error": f"Ticker {ticker} not found in SEC ticker map"}
+
+    cik_padded = str(cik).zfill(10)
+    sub_url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+    try:
+        s = requests.get(sub_url, headers=headers, timeout=30)
+        s.raise_for_status()
+        sub = s.json()
+    except Exception as e:
+        return {
+            "company": company,
+            "cik": cik,
+            "submissions_url": sub_url,
+            "error": f"SEC submissions fetch failed: {e}",
+        }
+
+    recent = sub.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    acc = recent.get("accessionNumber", [])
+    filing_dates = recent.get("filingDate", [])
+    report_dates = recent.get("reportDate", [])
+    primary_docs = recent.get("primaryDocument", [])
+    descriptions = recent.get("primaryDocDescription", [])
+
+    wanted = {"8-K", "10-Q", "10-K", "6-K", "20-F"}
+    rows: List[Dict[str, Any]] = []
+    for i, f in enumerate(forms):
+        if f not in wanted:
+            continue
+        accession = acc[i]
+        accession_nodash = accession.replace("-", "")
+        primary = primary_docs[i]
+        filing_date = filing_dates[i]
+        report_date = report_dates[i] if i < len(report_dates) else None
+        desc = descriptions[i] if i < len(descriptions) else ""
+
+        filing_link = f"https://www.sec.gov/ixviewer/ix.html?doc=/Archives/edgar/data/{cik}/{accession_nodash}/{primary}"
+        archive_link = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{primary}"
+
+        rows.append(
+            {
+                "form": f,
+                "filing_date": filing_date,
+                "report_date": report_date,
+                "description": desc,
+                "filing_link": filing_link,
+                "archive_link": archive_link,
+            }
+        )
+
+    rows.sort(key=lambda x: x.get("filing_date") or "", reverse=True)
+
+    return {
+        "company": company,
+        "cik": cik,
+        "submissions_url": sub_url,
+        "filings": rows[:15],
+    }
+
+
+def _fmt_num(v: Optional[float], pct=False, bn=False) -> str:
+    if v is None:
+        return "N/A"
+    if pct:
+        return f"{v * 100:.1f}%"
+    if bn:
+        return f"${v / 1e9:.2f}B"
+    if isinstance(v, (int, float)):
+        return f"{v:.2f}" if abs(v) < 1000 else f"{v:,.0f}"
+    return str(v)
+
+
+def _ir_candidates(ticker: str, company_name: Optional[str]) -> List[str]:
+    base = (company_name or ticker).lower()
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
+    return [
+        f"https://investor.{base}.com",
+        f"https://ir.{base}.com",
+        f"https://www.{base}.com/investors",
+        f"https://www.{base}.com/investor-relations",
+    ]
+
+
+def build_report(ticker: str, company_name: Optional[str], yb: Dict[str, Any], sec: Dict[str, Any]) -> str:
+    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    resolved_name = company_name or _safe_get(yb, "meta", "company_name") or sec.get("company") or ticker
+
+    lines = []
+    lines.append(f"# {resolved_name} ({ticker.upper()}) Earnings Analysis Workflow Report")
+    lines.append("")
+    lines.append(f"Generated: {now}")
+    lines.append("")
+
+    lines.append("## 1) Market Snapshot")
+    p = yb.get("price", {})
+    v = yb.get("valuation", {})
+    lines += [
+        f"- Price: {_fmt_num(p.get('current'))} {p.get('currency', 'USD')}",
+        f"- Previous Close: {_fmt_num(p.get('previous_close'))}",
+        f"- Day Range: {_fmt_num(p.get('day_low'))} - {_fmt_num(p.get('day_high'))}",
+        f"- 52W Range: {_fmt_num(p.get('low_52w'))} - {_fmt_num(p.get('high_52w'))}",
+        f"- Market Cap: {_fmt_num(p.get('market_cap'), bn=True)}",
+        f"- Forward P/E: {_fmt_num(v.get('forward_pe'))}",
+        f"- Trailing P/E: {_fmt_num(v.get('trailing_pe'))}",
+        f"- PEG: {_fmt_num(v.get('peg'))}",
+        f"- Beta: {_fmt_num(v.get('beta'))}",
+    ]
+    lines.append("")
+
+    lines.append("## 2) Latest Earnings Timing & Street Expectations")
+    e = yb.get("earnings", {})
+    lines.append(f"- Latest/Next Earnings Date (Yahoo feed): {e.get('earnings_date') or 'N/A'}")
+    trend = e.get("trend", [])
+    for t in trend[:3]:
+        period = t.get("period")
+        ee = t.get("earningsEstimate", {})
+        re = t.get("revenueEstimate", {})
+        lines.append(
+            f"- {period}: EPS est avg {ee.get('avg', 'N/A')} | Revenue est avg {_fmt_num(re.get('avg'))}"
+        )
+    lines.append("")
+
+    lines.append("## 3) Official Filings (Primary Source)")
+    if sec.get("error"):
+        lines.append(f"- SEC lookup error: {sec['error']}")
+    else:
+        lines.append(f"- SEC Submissions API: {sec.get('submissions_url')}")
+        for r in sec.get("filings", [])[:10]:
+            lines.append(
+                f"- {r['filing_date']} | {r['form']} | {r.get('description') or 'N/A'} | report date: {r.get('report_date') or 'N/A'}"
+            )
+            lines.append(f"  - ixviewer: {r['filing_link']}")
+            lines.append(f"  - archive: {r['archive_link']}")
+    lines.append("")
+
+    lines.append("## 4) Investor Relations Source Discovery (Manual Verification)")
+    lines.append("Use browser to verify the latest shareholder letter / earnings release / webcast deck:")
+    for u in _ir_candidates(ticker, resolved_name):
+        lines.append(f"- {u}")
+    lines.append("")
+
+    lines.append("## 5) Financial Quality Quick Checks")
+    f = yb.get("financial", {})
+    lines += [
+        f"- Revenue Growth: {_fmt_num(f.get('revenue_growth'), pct=True)}",
+        f"- Gross Margin: {_fmt_num(f.get('gross_margin'), pct=True)}",
+        f"- Operating Margin: {_fmt_num(f.get('operating_margin'), pct=True)}",
+        f"- Profit Margin: {_fmt_num(f.get('profit_margin'), pct=True)}",
+        f"- ROE: {_fmt_num(f.get('roe'), pct=True)}",
+        f"- Operating Cash Flow: {_fmt_num(f.get('operating_cashflow'), bn=True)}",
+        f"- Free Cash Flow: {_fmt_num(f.get('free_cashflow'), bn=True)}",
+        f"- Total Cash: {_fmt_num(f.get('total_cash'), bn=True)}",
+        f"- Total Debt: {_fmt_num(f.get('total_debt'), bn=True)}",
+    ]
+    lines.append("")
+
+    lines.append("## 6) Standardized Earnings Interpretation Checklist")
+    lines.append("- [ ] Revenue vs consensus (beat/miss, quality of growth)")
+    lines.append("- [ ] EPS vs consensus (GAAP / non-GAAP split)")
+    lines.append("- [ ] Gross / Operating margin trend and drivers")
+    lines.append("- [ ] FCF / OCF quality (one-off adjustments?)")
+    lines.append("- [ ] Guidance (next quarter + full year) and confidence")
+    lines.append("- [ ] Capital allocation (buyback, debt, M&A, dilution)")
+    lines.append("- [ ] Management commentary & risk flags")
+    lines.append("- [ ] Valuation reset after earnings (P/E, PEG, DCF impact)")
+    lines.append("")
+
+    lines.append("## 7) Final Output Template")
+    lines.append("- Investment Rating: BUY / HOLD / AVOID + stars")
+    lines.append("- Left-side entry plan: 4 tranches with price zones")
+    lines.append("- Options plan: Sell Put / Vertical / Covered Call")
+    lines.append("- 3-year target range + key assumptions")
+    lines.append("- Risks that can invalidate thesis")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run a reusable earnings-analysis workflow for any listed company")
+    parser.add_argument("ticker", help="Ticker, e.g. COIN, AAPL, MSFT")
+    parser.add_argument("--company", help="Optional company name override", default=None)
+    parser.add_argument("--out", help="Output markdown path", default=None)
+    parser.add_argument("--json", help="Also dump raw json next to report", action="store_true")
+    args = parser.parse_args()
+
+    ticker = args.ticker.upper().strip()
+    yahoo_block = fetch_yahoo_block(ticker)
+    sec_block = fetch_sec_block(ticker)
+
+    report = build_report(ticker, args.company, yahoo_block, sec_block)
+
+    if args.out:
+        out_path = Path(args.out).expanduser().resolve()
+    else:
+        out_path = Path.cwd() / f"{ticker.lower()}-earnings-workflow.md"
+
+    out_path.write_text(report, encoding="utf-8")
+    print(f"✅ Report generated: {out_path}")
+
+    if args.json:
+        raw = {
+            "ticker": ticker,
+            "yahoo": yahoo_block,
+            "sec": sec_block,
+        }
+        json_path = out_path.with_suffix(".json")
+        json_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"✅ Raw JSON generated: {json_path}")
+
+
+if __name__ == "__main__":
+    main()
