@@ -128,6 +128,12 @@ analyze-earnings BRK.B --company "Berkshire Hathaway"
 - 安全边际充足
 - 长期持有复合增长
 
+### 10. 短期期权与隐含波动率分析（新增）
+- 最近到期期权的 Call/Put 成交量
+- Put/Call 成交量比 与 持仓量比
+- ATM 附近平均隐含波动率（IV）
+- 用于辅助判断短期情绪与波动风险
+
 ## 示例输出
 
 ```bash

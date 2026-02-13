@@ -9,6 +9,71 @@ import json
 from datetime import datetime
 from typing import Dict, Optional
 
+
+def summarize_short_term_options(option_chain, current_price: float) -> Dict:
+    """汇总近端到期（最短期限）期权成交量与隐含波动率"""
+    try:
+        if option_chain is None or getattr(option_chain, 'empty', True):
+            return {"available": False}
+
+        df = option_chain.reset_index().copy()
+        if df.empty or 'expiration' not in df.columns:
+            return {"available": False}
+
+        # 选最近到期
+        exp_dates = sorted(df['expiration'].dropna().unique())
+        if not exp_dates:
+            return {"available": False}
+        nearest_exp = exp_dates[0]
+        near_df = df[df['expiration'] == nearest_exp].copy()
+
+        if near_df.empty:
+            return {"available": False}
+
+        near_df['volume'] = near_df['volume'].fillna(0)
+        near_df['openInterest'] = near_df['openInterest'].fillna(0)
+        near_df['impliedVolatility'] = near_df['impliedVolatility'].fillna(0)
+
+        calls = near_df[near_df['optionType'] == 'calls']
+        puts = near_df[near_df['optionType'] == 'puts']
+
+        call_vol = float(calls['volume'].sum()) if not calls.empty else 0.0
+        put_vol = float(puts['volume'].sum()) if not puts.empty else 0.0
+        call_oi = float(calls['openInterest'].sum()) if not calls.empty else 0.0
+        put_oi = float(puts['openInterest'].sum()) if not puts.empty else 0.0
+
+        # ATM附近IV（距离现价最近的5个合约）
+        near_df['moneyness_dist'] = (near_df['strike'] - current_price).abs()
+        atm = near_df.nsmallest(5, 'moneyness_dist')
+        atm_iv = float(atm['impliedVolatility'].mean()) if not atm.empty else 0.0
+
+        # 成交量最大合约
+        top = near_df.sort_values('volume', ascending=False).head(3)
+        top_contracts = []
+        for _, r in top.iterrows():
+            top_contracts.append({
+                'contract': r.get('contractSymbol'),
+                'type': r.get('optionType'),
+                'strike': float(r.get('strike', 0) or 0),
+                'volume': int(r.get('volume', 0) or 0),
+                'iv': float(r.get('impliedVolatility', 0) or 0),
+            })
+
+        return {
+            'available': True,
+            'nearest_expiration': str(nearest_exp),
+            'call_volume': int(call_vol),
+            'put_volume': int(put_vol),
+            'put_call_volume_ratio': round((put_vol / call_vol), 2) if call_vol > 0 else None,
+            'call_open_interest': int(call_oi),
+            'put_open_interest': int(put_oi),
+            'put_call_oi_ratio': round((put_oi / call_oi), 2) if call_oi > 0 else None,
+            'atm_iv': round(atm_iv, 4),
+            'top_contracts': top_contracts,
+        }
+    except Exception:
+        return {"available": False}
+
 def analyze_stock(ticker: str, save: bool = False, format_type: str = "text") -> Dict:
     """分析股票并返回结果字典"""
     
@@ -30,6 +95,7 @@ def analyze_stock(ticker: str, save: bool = False, format_type: str = "text") ->
     cashflow = stock.cash_flow(frequency='a')
     earnings_trend = stock.earnings_trend
     recommendations = stock.recommendation_trend
+    option_chain = stock.option_chain
     
     # 基础数据
     current_price = price_data.get('regularMarketPrice', 0)
@@ -38,6 +104,9 @@ def analyze_stock(ticker: str, save: bool = False, format_type: str = "text") ->
     
     high_52w = price_data.get('fiftyTwoWeekHigh', current_price * 1.2)
     low_52w = price_data.get('fiftyTwoWeekLow', current_price * 0.8)
+
+    # 短期期权情绪与波动
+    options_summary = summarize_short_term_options(option_chain, current_price)
     
     # 估值指标
     forward_pe = stats_data.get('forwardPE', 0)
@@ -174,6 +243,8 @@ def analyze_stock(ticker: str, save: bool = False, format_type: str = "text") ->
             "target_low": round(target_low, 2),
             "upside": round((target_mean - current_price) / current_price * 100, 1) if target_mean else None,
         },
+
+        "options": options_summary,
         
         "dcf": {
             "intrinsic_value": round(intrinsic_value, 2),
@@ -213,6 +284,14 @@ def print_report(data: Dict):
     
     if data['analyst']['target_mean']:
         print(f"• 分析师目标价: ${data['analyst']['target_mean']} ({data['analyst']['upside']:+.1f}%)")
+
+    # 短期期权与IV
+    if data.get('options', {}).get('available'):
+        o = data['options']
+        print(f"\n【短期期权与隐含波动率】(最近到期: {o.get('nearest_expiration')})")
+        print(f"• Call成交量: {o.get('call_volume')} | Put成交量: {o.get('put_volume')} | P/C成交量比: {o.get('put_call_volume_ratio')}")
+        print(f"• Call持仓量: {o.get('call_open_interest')} | Put持仓量: {o.get('put_open_interest')} | P/C持仓比: {o.get('put_call_oi_ratio')}")
+        print(f"• ATM附近平均IV: {round(o.get('atm_iv', 0) * 100, 2)}%")
     
     # 五维评分
     print("\n【五维评分】")
@@ -260,7 +339,11 @@ def save_report(data: Dict, filename: str = None):
         f.write(f"- **市值**: ${data['price']['market_cap_b']:.1f}B\n")
         f.write(f"- **行业**: {data['industry']}\n")
         f.write(f"- **Forward P/E**: {data['valuation']['forward_pe']}x\n")
-        f.write(f"- **ROE**: {data['profitability']['roe']}%\n\n")
+        f.write(f"- **ROE**: {data['profitability']['roe']}%\n")
+        if data.get('options', {}).get('available'):
+            f.write(f"- **短期期权P/C成交量比**: {data['options'].get('put_call_volume_ratio')}\n")
+            f.write(f"- **短期期权ATM IV**: {round(data['options'].get('atm_iv', 0) * 100, 2)}%\n")
+        f.write("\n")
         
         f.write("## 五维评分\n\n")
         f.write(f"| 维度 | 评分 |\n")

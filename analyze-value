@@ -11,6 +11,56 @@ import math
 from datetime import datetime
 from typing import Dict, List, Tuple
 
+
+def summarize_short_term_options(option_chain, current_price: float) -> Dict:
+    """汇总近端到期期权的成交量、持仓和ATM隐含波动率"""
+    try:
+        if option_chain is None or getattr(option_chain, 'empty', True):
+            return {"available": False}
+
+        df = option_chain.reset_index().copy()
+        if df.empty or 'expiration' not in df.columns:
+            return {"available": False}
+
+        exp_dates = sorted(df['expiration'].dropna().unique())
+        if not exp_dates:
+            return {"available": False}
+
+        nearest_exp = exp_dates[0]
+        near_df = df[df['expiration'] == nearest_exp].copy()
+        if near_df.empty:
+            return {"available": False}
+
+        near_df['volume'] = near_df['volume'].fillna(0)
+        near_df['openInterest'] = near_df['openInterest'].fillna(0)
+        near_df['impliedVolatility'] = near_df['impliedVolatility'].fillna(0)
+
+        calls = near_df[near_df['optionType'] == 'calls']
+        puts = near_df[near_df['optionType'] == 'puts']
+
+        call_vol = float(calls['volume'].sum()) if not calls.empty else 0.0
+        put_vol = float(puts['volume'].sum()) if not puts.empty else 0.0
+        call_oi = float(calls['openInterest'].sum()) if not calls.empty else 0.0
+        put_oi = float(puts['openInterest'].sum()) if not puts.empty else 0.0
+
+        near_df['moneyness_dist'] = (near_df['strike'] - current_price).abs()
+        atm = near_df.nsmallest(5, 'moneyness_dist')
+        atm_iv = float(atm['impliedVolatility'].mean()) if not atm.empty else 0.0
+
+        return {
+            'available': True,
+            'nearest_expiration': str(nearest_exp),
+            'call_volume': int(call_vol),
+            'put_volume': int(put_vol),
+            'put_call_volume_ratio': round((put_vol / call_vol), 2) if call_vol > 0 else None,
+            'call_open_interest': int(call_oi),
+            'put_open_interest': int(put_oi),
+            'put_call_oi_ratio': round((put_oi / call_oi), 2) if call_oi > 0 else None,
+            'atm_iv': round(atm_iv, 4),
+        }
+    except Exception:
+        return {"available": False}
+
 def calculate_dcf(fcf_current: float, growth_years: List[float], terminal_growth: float, wacc: float, shares: float) -> Dict:
     """
     三阶段DCF估值模型 (Buffett风格)
@@ -182,6 +232,7 @@ def value_investing_analysis(ticker: str) -> Dict:
     cashflow = stock.cash_flow(frequency='a')
     income = stock.income_statement(frequency='a')
     earnings_trend = stock.earnings_trend
+    option_chain = stock.option_chain
     
     current_price = price_data.get('regularMarketPrice', 0)
     market_cap = price_data.get('marketCap', 0)
@@ -189,6 +240,9 @@ def value_investing_analysis(ticker: str) -> Dict:
     
     high_52w = price_data.get('fiftyTwoWeekHigh', current_price * 1.2)
     low_52w = price_data.get('fiftyTwoWeekLow', current_price * 0.8)
+
+    # 短期期权成交量与隐含波动率
+    options_summary = summarize_short_term_options(option_chain, current_price)
     
     # 财务指标
     roe = financial.get('returnOnEquity', 0)
@@ -358,6 +412,8 @@ def value_investing_analysis(ticker: str) -> Dict:
             "eps_growth_2y": round(eps_growth_2y * 100, 1),
             "revenue_growth": round(revenue_growth * 100, 1),
         },
+
+        "options": options_summary,
         
         "moat": moat,
         
@@ -401,6 +457,13 @@ def print_value_report(data: Dict):
     print(f"• 股价: ${data['price']['current']} | 市值: ${data['price']['market_cap_b']:.1f}B")
     print(f"• 52周区间: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}")
     print(f"• 当前位置: {data['price']['position_pct']}% (距高点 -{data['price'].get('drop_from_high', 0):.1f}%)")
+
+    if data.get('options', {}).get('available'):
+        o = data['options']
+        print(f"\n【短期期权与隐含波动率】(最近到期: {o.get('nearest_expiration')})")
+        print(f"• Call成交量: {o.get('call_volume')} | Put成交量: {o.get('put_volume')} | P/C成交量比: {o.get('put_call_volume_ratio')}")
+        print(f"• Call持仓量: {o.get('call_open_interest')} | Put持仓量: {o.get('put_open_interest')} | P/C持仓比: {o.get('put_call_oi_ratio')}")
+        print(f"• ATM附近平均IV: {round(o.get('atm_iv', 0) * 100, 2)}%")
     
     # 维度1: 前瞻市盈率 (Forward P/E) 详细分析
     print(f"\n【一、前瞻市盈率 (Forward P/E) 详细分析】")
@@ -730,7 +793,11 @@ def save_value_report(data: Dict, filename: str = None):
         f.write(f"- **股价**: ${data['price']['current']}\n")
         f.write(f"- **市值**: ${data['price']['market_cap_b']:.1f}B\n")
         f.write(f"- **52周区间**: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}\n")
-        f.write(f"- **Forward P/E**: {data['valuation']['forward_pe']}x\n\n")
+        f.write(f"- **Forward P/E**: {data['valuation']['forward_pe']}x\n")
+        if data.get('options', {}).get('available'):
+            f.write(f"- **短期期权P/C成交量比**: {data['options'].get('put_call_volume_ratio')}\n")
+            f.write(f"- **短期期权ATM IV**: {round(data['options'].get('atm_iv', 0) * 100, 2)}%\n")
+        f.write("\n")
         
         f.write("## 💰 巴菲特式估值\n\n")
         f.write(f"- **DCF内在价值**: ${data['valuation']['intrinsic_value']}\n")
