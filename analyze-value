@@ -12,6 +12,116 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 
+def safe_float(value, default: float = 0.0) -> float:
+    """将可能为dict/None/字符串的值安全转为float"""
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, dict):
+        for k in ("raw", "fmt", "longFmt", "value"):
+            if k in value:
+                return safe_float(value.get(k), default)
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def score_to_text(score: int) -> str:
+    return "优秀" if score >= 5 else "良好" if score >= 4 else "一般" if score >= 3 else "偏弱"
+
+
+def build_quality_assessment(profile: Dict, financial: Dict, moat: Dict, margin_of_safety: float, revenue_growth: float) -> Dict:
+    """巴菲特+段永平好公司定性评估：业务/盈利模式/文化/四问四看"""
+    industry = profile.get('industry', 'N/A')
+    sector = profile.get('sector', 'N/A')
+    summary = profile.get('longBusinessSummary', '') or ''
+
+    # 公司业务（尽量简洁）
+    business = f"{profile.get('longName', profile.get('shortName', '公司'))} 属于{sector}/{industry}，核心是通过平台与基础设施提供产品与服务。"
+    if summary:
+        business = summary.split('. ')[0].strip() + '。'
+
+    # 盈利模式
+    gm = safe_float(financial.get('grossMargins', 0))
+    om = safe_float(financial.get('operatingMargins', 0))
+    pm = safe_float(financial.get('profitMargins', 0))
+    opcf = safe_float(financial.get('operatingCashflow', 0))
+    fcf = safe_float(financial.get('freeCashflow', 0))
+
+    model_parts = []
+    if gm:
+        model_parts.append(f"毛利率约{gm*100:.1f}%")
+    if om:
+        model_parts.append(f"经营利润率约{om*100:.1f}%")
+    if pm:
+        model_parts.append(f"净利率约{pm*100:.1f}%")
+    if opcf:
+        model_parts.append(f"经营现金流约{opcf/1e9:.2f}B")
+    if fcf:
+        model_parts.append(f"自由现金流约{fcf/1e9:.2f}B")
+    business_model = "；".join(model_parts) if model_parts else "盈利模式数据有限，需结合最新财报补充。"
+
+    # 公司文化（启发式）
+    officers = profile.get('companyOfficers', []) or []
+    founder_keywords = ('Founder', 'Co-Founder', '创始')
+    founder_count = 0
+    for o in officers[:8]:
+        title = (o.get('title') or '')
+        if any(k in title for k in founder_keywords):
+            founder_count += 1
+
+    culture = []
+    if founder_count >= 2:
+        culture.append("创始团队仍深度参与管理，战略连续性较强")
+    elif founder_count == 1:
+        culture.append("核心创始人仍在管理层，长期导向尚可")
+    else:
+        culture.append("职业经理人主导，需持续跟踪激励与资本配置")
+
+    if moat.get('average', 0) >= 4:
+        culture.append("组织在竞争中执行力较强，具备一定长期主义基础")
+    else:
+        culture.append("组织护城河仍需验证，文化优势未完全固化")
+
+    # 巴菲特四问
+    b1 = "是" if moat.get('average', 0) >= 3.5 else "一般"
+    b2 = "是" if moat.get('average', 0) >= 4 else "待验证"
+    b3 = "偏是" if founder_count >= 1 else "待验证"
+    b4 = "是" if margin_of_safety > 15 else "一般" if margin_of_safety > 0 else "否"
+
+    buffett = {
+        "业务可理解": b1,
+        "可持续护城河": b2,
+        "管理层可信": b3,
+        "具备安全边际": b4,
+    }
+
+    # 段永平四看
+    d1 = "是" if pm > 0 and gm > 0.3 else "一般"
+    d2 = "偏是" if moat.get('average', 0) >= 3.5 else "待验证"
+    d3 = "是" if margin_of_safety > 10 else "一般" if margin_of_safety > 0 else "否"
+    d4 = "是" if (safe_float(financial.get('currentRatio', 1)) > 1 or pm > 0) else "否"
+
+    duan = {
+        "好生意": d1,
+        "好公司": d2,
+        "好价格": d3,
+        "拿得住": d4,
+    }
+
+    return {
+        "business": business,
+        "business_model": business_model,
+        "culture": "；".join(culture),
+        "buffett": buffett,
+        "duan": duan,
+        "revenue_growth_pct": round(revenue_growth * 100, 1),
+    }
+
+
 def summarize_short_term_options(option_chain, current_price: float) -> Dict:
     """汇总近端到期期权的成交量、持仓和ATM隐含波动率"""
     try:
@@ -234,25 +344,25 @@ def value_investing_analysis(ticker: str) -> Dict:
     earnings_trend = stock.earnings_trend
     option_chain = stock.option_chain
     
-    current_price = price_data.get('regularMarketPrice', 0)
-    market_cap = price_data.get('marketCap', 0)
-    shares = stats_data.get('sharesOutstanding', 0)
+    current_price = safe_float(price_data.get('regularMarketPrice', 0))
+    market_cap = safe_float(price_data.get('marketCap', 0))
+    shares = safe_float(stats_data.get('sharesOutstanding', 0))
     
-    high_52w = price_data.get('fiftyTwoWeekHigh', current_price * 1.2)
-    low_52w = price_data.get('fiftyTwoWeekLow', current_price * 0.8)
+    high_52w = safe_float(price_data.get('fiftyTwoWeekHigh', current_price * 1.2), current_price * 1.2)
+    low_52w = safe_float(price_data.get('fiftyTwoWeekLow', current_price * 0.8), current_price * 0.8)
 
     # 短期期权成交量与隐含波动率
     options_summary = summarize_short_term_options(option_chain, current_price)
     
     # 财务指标
-    roe = financial.get('returnOnEquity', 0)
-    roa = financial.get('returnOnAssets', 0)
-    gross_margin = financial.get('grossMargins', 0)
-    operating_margin = financial.get('operatingMargins', 0)
-    net_margin = financial.get('profitMargins', 0)
+    roe = safe_float(financial.get('returnOnEquity', 0))
+    roa = safe_float(financial.get('returnOnAssets', 0))
+    gross_margin = safe_float(financial.get('grossMargins', 0))
+    operating_margin = safe_float(financial.get('operatingMargins', 0))
+    net_margin = safe_float(financial.get('profitMargins', 0))
     
-    forward_pe = stats_data.get('forwardPE', 0)
-    pb = stats_data.get('priceToBook', 0)
+    forward_pe = safe_float(stats_data.get('forwardPE', 0))
+    pb = safe_float(stats_data.get('priceToBook', 0))
     
     # 获取FCF (尝试多种方式)
     fcf = 0
@@ -307,11 +417,14 @@ def value_investing_analysis(ticker: str) -> Dict:
         for item in trend_data:
             period = item.get('period')
             if period == '0y':
-                eps_growth_1y = item.get('growth', 0)
-                revenue_growth = item.get('revenueEstimate', {}).get('growth', 0)
+                eps_growth_1y = safe_float(item.get('growth', 0), 0)
+                revenue_growth = safe_float(item.get('revenueEstimate', {}).get('growth', 0), 0)
             elif period == '+1y':
-                eps_growth_2y = item.get('growth', 0)
+                eps_growth_2y = safe_float(item.get('growth', 0), 0)
     
+    if revenue_growth == 0:
+        revenue_growth = safe_float(financial.get('revenueGrowth', 0), 0)
+
     # 护城河分析
     moat = analyze_moat(roe, gross_margin, net_margin, market_cap, 
                         profile.get('sector', ''), revenue_growth)
@@ -355,6 +468,9 @@ def value_investing_analysis(ticker: str) -> Dict:
     heavy_min = max(low_52w, intrinsic_value * 0.7)
     extreme = intrinsic_value * 0.6
     
+    # 巴菲特 + 段永平定性评估
+    quality = build_quality_assessment(profile, financial, moat, margin_of_safety, revenue_growth)
+
     # 五维评分
     score_valuation = 5 if margin_of_safety > 30 else 4 if margin_of_safety > 15 else 3 if margin_of_safety > 0 else 2
     score_moat = int(moat["average"])
@@ -385,6 +501,7 @@ def value_investing_analysis(ticker: str) -> Dict:
             "week_52_high": round(high_52w, 2),
             "week_52_low": round(low_52w, 2),
             "position_pct": round((current_price - low_52w) / (high_52w - low_52w) * 100, 1) if high_52w != low_52w else 0,
+            "drop_from_high": round((high_52w - current_price) / high_52w * 100, 1) if high_52w else 0,
         },
         
         "valuation": {
@@ -412,6 +529,8 @@ def value_investing_analysis(ticker: str) -> Dict:
             "eps_growth_2y": round(eps_growth_2y * 100, 1),
             "revenue_growth": round(revenue_growth * 100, 1),
         },
+
+        "quality": quality,
 
         "options": options_summary,
         
@@ -458,6 +577,18 @@ def print_value_report(data: Dict):
     print(f"• 52周区间: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}")
     print(f"• 当前位置: {data['price']['position_pct']}% (距高点 -{data['price'].get('drop_from_high', 0):.1f}%)")
 
+    q = data.get('quality', {})
+    if q:
+        print(f"\n【零、巴菲特 + 段永平好公司评估】")
+        print(f"• 公司业务: {q.get('business', 'N/A')}")
+        print(f"• 盈利模式: {q.get('business_model', 'N/A')}")
+        print(f"• 公司文化: {q.get('culture', 'N/A')}")
+
+        b = q.get('buffett', {})
+        d = q.get('duan', {})
+        print(f"• 巴菲特四问: 业务可理解={b.get('业务可理解','N/A')} / 护城河={b.get('可持续护城河','N/A')} / 管理层={b.get('管理层可信','N/A')} / 安全边际={b.get('具备安全边际','N/A')}")
+        print(f"• 段永平四看: 好生意={d.get('好生意','N/A')} / 好公司={d.get('好公司','N/A')} / 好价格={d.get('好价格','N/A')} / 拿得住={d.get('拿得住','N/A')}")
+
     if data.get('options', {}).get('available'):
         o = data['options']
         print(f"\n【短期期权与隐含波动率】(最近到期: {o.get('nearest_expiration')})")
@@ -473,7 +604,9 @@ def print_value_report(data: Dict):
     
     # P/E 分析
     pe = data['valuation']['forward_pe']
-    if pe < 15:
+    if pe <= 0:
+        pe_analysis = "⚠️ Forward P/E为负或不可用，PE估值失效（需结合P/S、现金流与路径）"
+    elif pe < 15:
         pe_analysis = "✅ 估值显著偏低，具备安全边际"
     elif pe < 20:
         pe_analysis = "✅ 估值合理偏低，成长性匹配"
@@ -487,18 +620,22 @@ def print_value_report(data: Dict):
     
     # 行业对比
     industry_pe = 25.0
-    pe_ratio = pe / industry_pe
-    if pe_ratio < 0.8:
-        pe_comparison = "低于行业均值20%以上，相对低估"
-    elif pe_ratio < 0.9:
-        pe_comparison = "低于行业均值10-20%，略低估"
-    elif pe_ratio < 1.1:
-        pe_comparison = "接近行业均值，估值合理"
-    elif pe_ratio < 1.2:
-        pe_comparison = "高于行业均值10-20%，略高估"
+    pe_ratio = pe / industry_pe if industry_pe else 0
+    if pe <= 0:
+        pe_comparison = "PE不可比（建议使用P/S、EV/Sales、FCF路径）"
+        print(f"• 行业对比: N/A → {pe_comparison}")
     else:
-        pe_comparison = "高于行业均值20%以上，明显高估"
-    print(f"• 行业对比: {pe_ratio:.2f}x 行业均值 → {pe_comparison}")
+        if pe_ratio < 0.8:
+            pe_comparison = "低于行业均值20%以上，相对低估"
+        elif pe_ratio < 0.9:
+            pe_comparison = "低于行业均值10-20%，略低估"
+        elif pe_ratio < 1.1:
+            pe_comparison = "接近行业均值，估值合理"
+        elif pe_ratio < 1.2:
+            pe_comparison = "高于行业均值10-20%，略高估"
+        else:
+            pe_comparison = "高于行业均值20%以上，明显高估"
+        print(f"• 行业对比: {pe_ratio:.2f}x 行业均值 → {pe_comparison}")
     
     # 维度2: 基本面分析
     print(f"\n【二、基本面五维分析】")
@@ -629,12 +766,12 @@ def print_value_report(data: Dict):
         print(f"  • 基础FCF: 数据获取失败，使用估算值")
     
     if eps_growth_1y:
-        print(f"  • 阶段1 (高成长3年): 年增长 {eps_growth_1y*100:.1f}%")
+        print(f"  • 阶段1 (高成长3年): 年增长 {eps_growth_1y:.1f}%")
     else:
         print(f"  • 阶段1 (高成长3年): 年增长 ~10% (估算)")
     
     if eps_growth_2y:
-        print(f"  • 阶段2 (中成长2年): 年增长 {eps_growth_2y*100:.1f}%")
+        print(f"  • 阶段2 (中成长2年): 年增长 {eps_growth_2y:.1f}%")
     else:
         print(f"  • 阶段2 (中成长2年): 年增长 ~8% (估算)")
     
@@ -789,6 +926,18 @@ def save_value_report(data: Dict, filename: str = None):
         f.write(f"> 💡 投资理念: 买公司，不是买股票 | 和时间做朋友 | 左侧交易\n\n")
         f.write(f"**分析日期**: {data['date']}\n\n")
         
+        f.write("## 🧭 巴菲特 + 段永平好公司评估\n\n")
+        q = data.get('quality', {})
+        if q:
+            f.write(f"- **公司业务**: {q.get('business', 'N/A')}\n")
+            f.write(f"- **盈利模式**: {q.get('business_model', 'N/A')}\n")
+            f.write(f"- **公司文化**: {q.get('culture', 'N/A')}\n")
+            b = q.get('buffett', {})
+            d = q.get('duan', {})
+            f.write(f"- **巴菲特四问**: 业务可理解={b.get('业务可理解','N/A')} / 护城河={b.get('可持续护城河','N/A')} / 管理层={b.get('管理层可信','N/A')} / 安全边际={b.get('具备安全边际','N/A')}\n")
+            f.write(f"- **段永平四看**: 好生意={d.get('好生意','N/A')} / 好公司={d.get('好公司','N/A')} / 好价格={d.get('好价格','N/A')} / 拿得住={d.get('拿得住','N/A')}\n")
+        f.write("\n")
+
         f.write("## 📊 核心数据\n\n")
         f.write(f"- **股价**: ${data['price']['current']}\n")
         f.write(f"- **市值**: ${data['price']['market_cap_b']:.1f}B\n")
@@ -859,8 +1008,9 @@ def main():
     
     ticker = sys.argv[1].upper()
     save = '--save' in sys.argv
-    format_md = '--format md' in sys.argv or '-f md' in sys.argv
-    format_json = '--format json' in sys.argv or '-f json' in sys.argv
+    # 兼容两种写法: --format md / --format=md
+    format_md = ('--format' in sys.argv and 'md' in sys.argv) or '--format=md' in sys.argv or ('-f' in sys.argv and 'md' in sys.argv)
+    format_json = ('--format' in sys.argv and 'json' in sys.argv) or '--format=json' in sys.argv or ('-f' in sys.argv and 'json' in sys.argv)
     
     try:
         result = value_investing_analysis(ticker)
