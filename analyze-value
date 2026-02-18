@@ -395,6 +395,12 @@ def value_investing_analysis(ticker: str) -> Dict:
             if ocf > 0:
                 fcf = ocf - capex
     
+    # financial_data 兜底（很多标的在cash_flow表中字段不稳定）
+    if fcf == 0:
+        fcf = safe_float(financial.get('freeCashflow', 0), 0)
+    if ocf == 0:
+        ocf = safe_float(financial.get('operatingCashflow', 0), 0)
+
     # 如果还是获取不到，用净利润估算
     if fcf == 0 and net_margin and income is not None and not income.empty:
         for col in income.columns:
@@ -459,14 +465,19 @@ def value_investing_analysis(ticker: str) -> Dict:
     iv_for_future = intrinsic_value if intrinsic_value > 0 else current_price * 1.2
     future_values = calculate_future_value(current_price, iv_for_future, avg_growth, 5)
     
-    # 左侧交易价格区间
-    first_batch_max = min(current_price * 1.05, intrinsic_value * 0.9)
+    # 左侧交易价格区间（修正区间上下界，确保 min <= max）
     first_batch_min = current_price * 0.95
+    first_batch_max = current_price * 1.05
+
+    second_batch_min = current_price * 0.85
     second_batch_max = current_price * 0.95
-    second_batch_min = max(current_price * 0.85, low_52w * 1.1)
+
+    heavy_min = max(low_52w * 0.95, current_price * 0.75)
     heavy_max = second_batch_min
-    heavy_min = max(low_52w, intrinsic_value * 0.7)
-    extreme = intrinsic_value * 0.6
+    if heavy_min > heavy_max:
+        heavy_min, heavy_max = heavy_max * 0.9, heavy_max
+
+    extreme = heavy_min
     
     # 巴菲特 + 段永平定性评估
     quality = build_quality_assessment(profile, financial, moat, margin_of_safety, revenue_growth)
@@ -491,6 +502,7 @@ def value_investing_analysis(ticker: str) -> Dict:
         rating = "AVOID ⭐⭐"
     
     return {
+        "framework": "Buffett+Duan qualitative + Five-Dimension Value Framework v2",
         "ticker": ticker,
         "name": profile.get('shortName', ticker),
         "date": datetime.now().strftime("%Y-%m-%d"),
