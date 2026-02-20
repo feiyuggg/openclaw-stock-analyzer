@@ -161,6 +161,39 @@ def build_quality_assessment(profile: Dict, financial: Dict, moat: Dict, margin_
     }
 
 
+def evaluate_buffett_duan_standards(forward_pe: float, roe: float, net_margin: float, moat_avg: float,
+                                    margin_of_safety: float, fcf_yield: float, peg_1y: float = None) -> Dict:
+    """巴菲特 + 段永平评判标准（量化快评）"""
+    checks = {
+        "巴菲特-ROE>15%": roe >= 15,
+        "巴菲特-护城河(>=4/5)": moat_avg >= 4,
+        "巴菲特-安全边际>20%": margin_of_safety > 20,
+        "巴菲特-估值不过热(PE<=25)": forward_pe > 0 and forward_pe <= 25,
+        "段永平-好生意(净利率>=15%)": net_margin >= 15,
+        "段永平-现金流质量(FCFY>=3%)": fcf_yield >= 3,
+        "段永平-好价格(PEG<=1.5)": (peg_1y is not None and peg_1y <= 1.5),
+    }
+
+    passed = sum(1 for v in checks.values() if v)
+    total = len(checks)
+    score = round(passed / total * 100, 1) if total else 0
+
+    if score >= 85:
+        verdict = "✅ 高匹配（可重点跟踪/分批）"
+    elif score >= 70:
+        verdict = "⏸️ 中等匹配（等待更好价格）"
+    else:
+        verdict = "⚠️ 低匹配（谨慎）"
+
+    return {
+        "checks": checks,
+        "passed": passed,
+        "total": total,
+        "score": score,
+        "verdict": verdict,
+    }
+
+
 def summarize_short_term_options(option_chain, current_price: float) -> Dict:
     """汇总近端到期期权的成交量、持仓和ATM隐含波动率"""
     try:
@@ -526,6 +559,18 @@ def value_investing_analysis(ticker: str) -> Dict:
     peg_1y = (forward_pe / (eps_growth_1y * 100)) if forward_pe > 0 and eps_growth_1y > 0 else None
     peg_2y = (forward_pe / (eps_growth_2y * 100)) if forward_pe > 0 and eps_growth_2y > 0 else None
 
+    # 巴菲特 + 段永平评判标准（量化）
+    fcf_yield_pct = (fcf_per_share / current_price * 100) if current_price else 0
+    standards = evaluate_buffett_duan_standards(
+        forward_pe=forward_pe,
+        roe=roe * 100 if roe else 0,
+        net_margin=net_margin * 100 if net_margin else 0,
+        moat_avg=moat.get('average', 0),
+        margin_of_safety=margin_of_safety,
+        fcf_yield=fcf_yield_pct,
+        peg_1y=peg_1y,
+    )
+
     # 五维评分
     score_valuation = 5 if margin_of_safety > 30 else 4 if margin_of_safety > 15 else 3 if margin_of_safety > 0 else 2
     score_moat = int(moat["average"])
@@ -589,6 +634,7 @@ def value_investing_analysis(ticker: str) -> Dict:
         },
 
         "quality": quality,
+        "standards": standards,
 
         "options": options_summary,
         
@@ -735,6 +781,13 @@ def print_value_report(data: Dict):
         d = q.get('duan', {})
         print(f"• 巴菲特四问: 业务可理解={b.get('业务可理解','N/A')} / 护城河={b.get('可持续护城河','N/A')} / 管理层={b.get('管理层可信','N/A')} / 安全边际={b.get('具备安全边际','N/A')}")
         print(f"• 段永平四看: 好生意={d.get('好生意','N/A')} / 好公司={d.get('好公司','N/A')} / 好价格={d.get('好价格','N/A')} / 拿得住={d.get('拿得住','N/A')}")
+
+    if data.get('standards'):
+        s = data['standards']
+        print(f"\n【巴菲特 + 段永平投资评判标准】")
+        for k, v in s.get('checks', {}).items():
+            print(f"• {k}: {'✅ 达标' if v else '❌ 未达标'}")
+        print(f"• 总分: {s.get('passed', 0)}/{s.get('total', 0)} ({s.get('score', 0)}分) | 结论: {s.get('verdict', 'N/A')}")
 
     if data.get('options', {}).get('available'):
         o = data['options']
@@ -1086,6 +1139,14 @@ def save_value_report(data: Dict, filename: str = None):
             f.write(f"- **巴菲特四问**: 业务可理解={b.get('业务可理解','N/A')} / 护城河={b.get('可持续护城河','N/A')} / 管理层={b.get('管理层可信','N/A')} / 安全边际={b.get('具备安全边际','N/A')}\n")
             f.write(f"- **段永平四看**: 好生意={d.get('好生意','N/A')} / 好公司={d.get('好公司','N/A')} / 好价格={d.get('好价格','N/A')} / 拿得住={d.get('拿得住','N/A')}\n")
         f.write("\n")
+
+        if data.get('standards'):
+            s = data['standards']
+            f.write("## 🧪 巴菲特 + 段永平投资评判标准\n\n")
+            for k, v in s.get('checks', {}).items():
+                f.write(f"- **{k}**: {'✅ 达标' if v else '❌ 未达标'}\n")
+            f.write(f"- **总分**: {s.get('passed', 0)}/{s.get('total', 0)} ({s.get('score', 0)}分)\n")
+            f.write(f"- **结论**: {s.get('verdict', 'N/A')}\n\n")
 
         f.write("## 📊 核心数据\n\n")
         f.write(f"- **股价**: ${data['price']['current']}\n")
