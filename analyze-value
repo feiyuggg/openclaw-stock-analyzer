@@ -412,6 +412,7 @@ def value_investing_analysis(ticker: str) -> Dict:
                     break
     
     fcf_per_share = fcf / shares if shares else 0
+    ocf_per_share = ocf / shares if shares and ocf else 0
     
     # 增长预期
     eps_growth_1y = 0
@@ -482,6 +483,10 @@ def value_investing_analysis(ticker: str) -> Dict:
     # 巴菲特 + 段永平定性评估
     quality = build_quality_assessment(profile, financial, moat, margin_of_safety, revenue_growth)
 
+    # PEG（用于结构化输出）
+    peg_1y = (forward_pe / (eps_growth_1y * 100)) if forward_pe > 0 and eps_growth_1y > 0 else None
+    peg_2y = (forward_pe / (eps_growth_2y * 100)) if forward_pe > 0 and eps_growth_2y > 0 else None
+
     # 五维评分
     score_valuation = 5 if margin_of_safety > 30 else 4 if margin_of_safety > 15 else 3 if margin_of_safety > 0 else 2
     score_moat = int(moat["average"])
@@ -531,6 +536,8 @@ def value_investing_analysis(ticker: str) -> Dict:
         },
         
         "cashflow": {
+            "ocf_b": round(ocf / 1e9, 2) if ocf else None,
+            "ocf_per_share": round(ocf_per_share, 2) if ocf_per_share else 0,
             "fcf_b": round(fcf / 1e9, 2) if fcf else None,
             "fcf_per_share": round(fcf_per_share, 2),
             "fcf_yield": round(fcf_per_share / current_price * 100, 2) if current_price else 0,
@@ -548,7 +555,21 @@ def value_investing_analysis(ticker: str) -> Dict:
         
         "moat": moat,
         
-        "dcf": dcf_result,
+        "peg": {
+            "peg_1y": round(peg_1y, 2) if peg_1y is not None else None,
+            "peg_2y": round(peg_2y, 2) if peg_2y is not None else None,
+        },
+
+        "dcf": {
+            **dcf_result,
+            "assumptions": {
+                "base_fcf_b": round(fcf_for_dcf / 1e9, 2) if fcf_for_dcf else None,
+                "stage1_growth_pct": round((growth_years[0] if growth_years else 0) * 100, 1),
+                "stage2_growth_pct": round((growth_years[2] if len(growth_years) > 2 else 0) * 100, 1),
+                "terminal_growth_pct": 2.5,
+                "wacc_pct": 9.0,
+            }
+        },
         
         "future_value": future_values,
         
@@ -680,6 +701,8 @@ def print_value_report(data: Dict):
     print(f"\n【三、现金流详细分析】")
     
     if data['cashflow']['fcf_b']:
+        print(f"• 年度经营现金流 (OCF): ${data['cashflow'].get('ocf_b', 0)}B")
+        print(f"• 每股经营现金流 (OCF/share): ${data['cashflow'].get('ocf_per_share', 0)}")
         print(f"• 年度自由现金流 (FCF): ${data['cashflow']['fcf_b']}B")
         print(f"• 每股自由现金流 (FCF/share): ${data['cashflow']['fcf_per_share']}")
         print(f"• FCF收益率 (FCF Yield): {data['cashflow']['fcf_yield']:.2f}%")
@@ -960,10 +983,21 @@ def save_value_report(data: Dict, filename: str = None):
             f.write(f"- **短期期权ATM IV**: {round(data['options'].get('atm_iv', 0) * 100, 2)}%\n")
         f.write("\n")
         
+        f.write("## 💵 现金流与PEG关键指标\n\n")
+        f.write(f"- **每股经营现金流 (OCF/share)**: ${data['cashflow'].get('ocf_per_share', 0)}\n")
+        f.write(f"- **每股自由现金流 (FCF/share)**: ${data['cashflow'].get('fcf_per_share', 0)}\n")
+        f.write(f"- **PEG(1年)**: {data.get('peg', {}).get('peg_1y', 'N/A')}\n")
+        f.write(f"- **PEG(2年)**: {data.get('peg', {}).get('peg_2y', 'N/A')}\n\n")
+
         f.write("## 💰 巴菲特式估值\n\n")
         f.write(f"- **DCF内在价值**: ${data['valuation']['intrinsic_value']}\n")
         f.write(f"- **安全边际**: {data['valuation']['margin_of_safety']:+.1f}%\n")
-        f.write(f"- **评级**: {'✅ 安全边际充足' if data['valuation']['margin_of_safety'] > 20 else '⏸️ 安全边际一般' if data['valuation']['margin_of_safety'] > 10 else '⚠️ 安全边际不足'}\n\n")
+        f.write(f"- **评级**: {'✅ 安全边际充足' if data['valuation']['margin_of_safety'] > 20 else '⏸️ 安全边际一般' if data['valuation']['margin_of_safety'] > 10 else '⚠️ 安全边际不足'}\n")
+        dcf_assump = data.get('dcf', {}).get('assumptions', {})
+        if dcf_assump:
+            f.write(f"- **DCF假设**: 基础FCF ${dcf_assump.get('base_fcf_b', 'N/A')}B, 阶段1增速 {dcf_assump.get('stage1_growth_pct', 'N/A')}%, 阶段2增速 {dcf_assump.get('stage2_growth_pct', 'N/A')}%, 永续增速 {dcf_assump.get('terminal_growth_pct', 'N/A')}%, WACC {dcf_assump.get('wacc_pct', 'N/A')}%\n\n")
+        else:
+            f.write("\n")
         
         f.write("## 🏰 护城河分析 (段永平五维)\n\n")
         f.write("| 维度 | 评分 |\n")
