@@ -33,6 +33,45 @@ def score_to_text(score: int) -> str:
     return "优秀" if score >= 5 else "良好" if score >= 4 else "一般" if score >= 3 else "偏弱"
 
 
+def get_industry_benchmarks(sector: str, industry: str = "") -> Dict:
+    """按行业给出核心估值/盈利/现金流对比基准（启发式）"""
+    sector = (sector or "").lower()
+    industry = (industry or "").lower()
+
+    # 默认（宽基）
+    bm = {
+        "forward_pe": 20.0,
+        "roe": 12.0,
+        "net_margin": 10.0,
+        "fcf_yield": 4.0,
+        "peg": 1.2,
+        "label": "宽基市场"
+    }
+
+    if "technology" in sector or "software" in industry or "internet" in industry:
+        bm.update({"forward_pe": 25.0, "roe": 15.0, "net_margin": 15.0, "fcf_yield": 3.0, "peg": 1.2, "label": "科技"})
+    elif "communication" in sector or "media" in industry or "interactive media" in industry:
+        bm.update({"forward_pe": 22.0, "roe": 14.0, "net_margin": 14.0, "fcf_yield": 3.0, "peg": 1.2, "label": "通信/媒体"})
+    elif "financial" in sector or "bank" in industry or "insurance" in industry:
+        bm.update({"forward_pe": 12.0, "roe": 11.0, "net_margin": 18.0, "fcf_yield": 5.0, "peg": 1.0, "label": "金融"})
+    elif "health" in sector or "biotech" in industry or "pharma" in industry:
+        bm.update({"forward_pe": 18.0, "roe": 12.0, "net_margin": 12.0, "fcf_yield": 3.5, "peg": 1.1, "label": "医疗"})
+    elif "consumer defensive" in sector or "staples" in industry:
+        bm.update({"forward_pe": 20.0, "roe": 14.0, "net_margin": 11.0, "fcf_yield": 4.0, "peg": 1.2, "label": "消费必需"})
+    elif "consumer cyclical" in sector or "retail" in industry or "auto" in industry:
+        bm.update({"forward_pe": 18.0, "roe": 12.0, "net_margin": 8.0, "fcf_yield": 4.0, "peg": 1.2, "label": "可选消费"})
+    elif "energy" in sector:
+        bm.update({"forward_pe": 11.0, "roe": 12.0, "net_margin": 10.0, "fcf_yield": 7.0, "peg": 1.0, "label": "能源"})
+    elif "utilities" in sector:
+        bm.update({"forward_pe": 16.0, "roe": 9.0, "net_margin": 12.0, "fcf_yield": 5.0, "peg": 1.2, "label": "公用事业"})
+    elif "industrials" in sector:
+        bm.update({"forward_pe": 19.0, "roe": 12.0, "net_margin": 9.0, "fcf_yield": 4.0, "peg": 1.2, "label": "工业"})
+    elif "real estate" in sector or "reit" in industry:
+        bm.update({"forward_pe": 16.0, "roe": 8.0, "net_margin": 15.0, "fcf_yield": 6.0, "peg": 1.1, "label": "地产/REIT"})
+
+    return bm
+
+
 def build_quality_assessment(profile: Dict, financial: Dict, moat: Dict, margin_of_safety: float, revenue_growth: float) -> Dict:
     """巴菲特+段永平好公司定性评估：业务/盈利模式/文化/四问四看"""
     industry = profile.get('industry', 'N/A')
@@ -612,10 +651,11 @@ def print_value_report(data: Dict):
 
     # 核心数据快评（优秀区间 + 同行业对比）
     print(f"\n【核心数据快评】(优秀区间 & 同行业对比)")
-    industry_pe = 25.0
-    industry_roe = 15.0
-    industry_net_margin = 15.0
-    industry_fcf_yield = 3.0
+    bm = get_industry_benchmarks(data.get('sector', ''), data.get('industry', ''))
+    industry_pe = bm['forward_pe']
+    industry_roe = bm['roe']
+    industry_net_margin = bm['net_margin']
+    industry_fcf_yield = bm['fcf_yield']
 
     fpe = data['valuation'].get('forward_pe') or 0
     roe = data['fundamentals'].get('roe') or 0
@@ -674,14 +714,15 @@ def print_value_report(data: Dict):
             peg_eval = "⏸️ 合理偏高"
         else:
             peg_eval = "⚠️ 偏高"
-        peg_vs_industry = "优于行业" if peg_1y < 1.2 else "弱于行业"
+        peg_vs_industry = "优于行业" if peg_1y < bm['peg'] else "弱于行业"
 
+    print(f"• 行业基准: {bm['label']} | PE~{industry_pe:.0f}x | ROE~{industry_roe:.0f}% | 净利率~{industry_net_margin:.0f}% | FCFY~{industry_fcf_yield:.1f}% | PEG~{bm['peg']:.1f}")
     print(f"• Forward PE: {fpe:.1f}x | {pe_eval} | 行业对比: {pe_vs_industry} (行业~{industry_pe:.0f}x)")
     print(f"• ROE: {roe:.1f}% | {roe_eval} | 行业对比: {roe_vs_industry} (行业~{industry_roe:.0f}%)")
     print(f"• 净利率: {net_margin:.1f}% | {nm_eval} | 行业对比: {nm_vs_industry} (行业~{industry_net_margin:.0f}%)")
     print(f"• FCF收益率: {fcf_yield:.2f}% | {fcf_eval} | 行业对比: {fcf_vs_industry} (行业~{industry_fcf_yield:.0f}%)")
     if peg_1y is not None:
-        print(f"• PEG(1Y): {peg_1y:.2f} | {peg_eval} | 行业对比: {peg_vs_industry} (基准~1.2)")
+        print(f"• PEG(1Y): {peg_1y:.2f} | {peg_eval} | 行业对比: {peg_vs_industry} (基准~{bm['peg']:.1f})")
 
     q = data.get('quality', {})
     if q:
@@ -1057,10 +1098,11 @@ def save_value_report(data: Dict, filename: str = None):
         f.write("\n")
 
         f.write("### 核心数据快评（优秀区间 + 行业对比）\n\n")
-        industry_pe = 25.0
-        industry_roe = 15.0
-        industry_net_margin = 15.0
-        industry_fcf_yield = 3.0
+        bm = get_industry_benchmarks(data.get('sector', ''), data.get('industry', ''))
+        industry_pe = bm['forward_pe']
+        industry_roe = bm['roe']
+        industry_net_margin = bm['net_margin']
+        industry_fcf_yield = bm['fcf_yield']
 
         fpe = data['valuation'].get('forward_pe') or 0
         roe = data['fundamentals'].get('roe') or 0
@@ -1080,13 +1122,14 @@ def save_value_report(data: Dict, filename: str = None):
         fcf_eval = "优秀" if fcf_yield >= 5 else "合格" if fcf_yield >= 3 else "偏低"
         fcf_vs = "优于行业" if fcf_yield > industry_fcf_yield else "弱于行业" if fcf_yield < industry_fcf_yield else "接近行业"
 
+        f.write(f"- **行业基准**: {bm['label']}（PE~{industry_pe:.0f}x, ROE~{industry_roe:.0f}%, 净利率~{industry_net_margin:.0f}%, FCFY~{industry_fcf_yield:.1f}%, PEG~{bm['peg']:.1f}）\n")
         f.write(f"- **Forward PE**: {fpe:.1f}x（{pe_eval}，{pe_vs}）\n")
         f.write(f"- **ROE**: {roe:.1f}%（{roe_eval}，{roe_vs}）\n")
         f.write(f"- **净利率**: {net_margin:.1f}%（{nm_eval}，{nm_vs}）\n")
         f.write(f"- **FCF收益率**: {fcf_yield:.2f}%（{fcf_eval}，{fcf_vs}）\n")
         if peg_1y is not None:
             peg_eval = "低估" if peg_1y < 1.0 else "合理偏高" if peg_1y <= 1.5 else "偏高"
-            peg_vs = "优于行业" if peg_1y < 1.2 else "弱于行业"
+            peg_vs = "优于行业" if peg_1y < bm['peg'] else "弱于行业"
             f.write(f"- **PEG(1Y)**: {peg_1y:.2f}（{peg_eval}，{peg_vs}）\n")
         f.write("\n")
         
