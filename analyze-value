@@ -610,6 +610,79 @@ def print_value_report(data: Dict):
     print(f"• 52周区间: ${data['price']['week_52_low']} - ${data['price']['week_52_high']}")
     print(f"• 当前位置: {data['price']['position_pct']}% (距高点 -{data['price'].get('drop_from_high', 0):.1f}%)")
 
+    # 核心数据快评（优秀区间 + 同行业对比）
+    print(f"\n【核心数据快评】(优秀区间 & 同行业对比)")
+    industry_pe = 25.0
+    industry_roe = 15.0
+    industry_net_margin = 15.0
+    industry_fcf_yield = 3.0
+
+    fpe = data['valuation'].get('forward_pe') or 0
+    roe = data['fundamentals'].get('roe') or 0
+    net_margin = data['fundamentals'].get('net_margin') or 0
+    fcf_yield = data['cashflow'].get('fcf_yield') or 0
+    peg_1y = data.get('peg', {}).get('peg_1y')
+
+    # Forward PE: 越低越好（在成长不失速前提下）
+    if fpe <= 0:
+        pe_eval = "N/A"
+    elif fpe < 18:
+        pe_eval = "✅ 估值偏低"
+    elif fpe <= 28:
+        pe_eval = "⏸️ 估值合理"
+    else:
+        pe_eval = "⚠️ 估值偏高"
+    pe_vs_industry = "优于行业" if fpe > 0 and fpe < industry_pe else "弱于行业" if fpe > industry_pe else "接近行业"
+
+    # ROE: 越高越好
+    if roe >= 25:
+        roe_eval = "✅ 优秀"
+    elif roe >= 15:
+        roe_eval = "✅ 良好"
+    else:
+        roe_eval = "⚠️ 一般"
+    roe_vs_industry = "优于行业" if roe > industry_roe else "弱于行业" if roe < industry_roe else "接近行业"
+
+    # 净利率: 越高越好
+    if net_margin >= 25:
+        nm_eval = "✅ 优秀"
+    elif net_margin >= 15:
+        nm_eval = "✅ 良好"
+    else:
+        nm_eval = "⚠️ 一般"
+    nm_vs_industry = "优于行业" if net_margin > industry_net_margin else "弱于行业" if net_margin < industry_net_margin else "接近行业"
+
+    # FCF Yield: 越高越好
+    if fcf_yield >= 5:
+        fcf_eval = "✅ 优秀"
+    elif fcf_yield >= 3:
+        fcf_eval = "✅ 合格"
+    elif fcf_yield > 0:
+        fcf_eval = "⏸️ 偏低"
+    else:
+        fcf_eval = "⚠️ 异常"
+    fcf_vs_industry = "优于行业" if fcf_yield > industry_fcf_yield else "弱于行业" if fcf_yield < industry_fcf_yield else "接近行业"
+
+    # PEG: 越低越好
+    if peg_1y is None:
+        peg_eval = "N/A"
+        peg_vs_industry = "N/A"
+    else:
+        if peg_1y < 1.0:
+            peg_eval = "✅ 低估"
+        elif peg_1y <= 1.5:
+            peg_eval = "⏸️ 合理偏高"
+        else:
+            peg_eval = "⚠️ 偏高"
+        peg_vs_industry = "优于行业" if peg_1y < 1.2 else "弱于行业"
+
+    print(f"• Forward PE: {fpe:.1f}x | {pe_eval} | 行业对比: {pe_vs_industry} (行业~{industry_pe:.0f}x)")
+    print(f"• ROE: {roe:.1f}% | {roe_eval} | 行业对比: {roe_vs_industry} (行业~{industry_roe:.0f}%)")
+    print(f"• 净利率: {net_margin:.1f}% | {nm_eval} | 行业对比: {nm_vs_industry} (行业~{industry_net_margin:.0f}%)")
+    print(f"• FCF收益率: {fcf_yield:.2f}% | {fcf_eval} | 行业对比: {fcf_vs_industry} (行业~{industry_fcf_yield:.0f}%)")
+    if peg_1y is not None:
+        print(f"• PEG(1Y): {peg_1y:.2f} | {peg_eval} | 行业对比: {peg_vs_industry} (基准~1.2)")
+
     q = data.get('quality', {})
     if q:
         print(f"\n【零、巴菲特 + 段永平好公司评估】")
@@ -981,6 +1054,40 @@ def save_value_report(data: Dict, filename: str = None):
         if data.get('options', {}).get('available'):
             f.write(f"- **短期期权P/C成交量比**: {data['options'].get('put_call_volume_ratio')}\n")
             f.write(f"- **短期期权ATM IV**: {round(data['options'].get('atm_iv', 0) * 100, 2)}%\n")
+        f.write("\n")
+
+        f.write("### 核心数据快评（优秀区间 + 行业对比）\n\n")
+        industry_pe = 25.0
+        industry_roe = 15.0
+        industry_net_margin = 15.0
+        industry_fcf_yield = 3.0
+
+        fpe = data['valuation'].get('forward_pe') or 0
+        roe = data['fundamentals'].get('roe') or 0
+        net_margin = data['fundamentals'].get('net_margin') or 0
+        fcf_yield = data['cashflow'].get('fcf_yield') or 0
+        peg_1y = data.get('peg', {}).get('peg_1y')
+
+        pe_eval = "估值偏低" if fpe and fpe < 18 else "估值合理" if fpe and fpe <= 28 else "估值偏高"
+        pe_vs = "优于行业" if fpe and fpe < industry_pe else "弱于行业" if fpe > industry_pe else "接近行业"
+
+        roe_eval = "优秀" if roe >= 25 else "良好" if roe >= 15 else "一般"
+        roe_vs = "优于行业" if roe > industry_roe else "弱于行业" if roe < industry_roe else "接近行业"
+
+        nm_eval = "优秀" if net_margin >= 25 else "良好" if net_margin >= 15 else "一般"
+        nm_vs = "优于行业" if net_margin > industry_net_margin else "弱于行业" if net_margin < industry_net_margin else "接近行业"
+
+        fcf_eval = "优秀" if fcf_yield >= 5 else "合格" if fcf_yield >= 3 else "偏低"
+        fcf_vs = "优于行业" if fcf_yield > industry_fcf_yield else "弱于行业" if fcf_yield < industry_fcf_yield else "接近行业"
+
+        f.write(f"- **Forward PE**: {fpe:.1f}x（{pe_eval}，{pe_vs}）\n")
+        f.write(f"- **ROE**: {roe:.1f}%（{roe_eval}，{roe_vs}）\n")
+        f.write(f"- **净利率**: {net_margin:.1f}%（{nm_eval}，{nm_vs}）\n")
+        f.write(f"- **FCF收益率**: {fcf_yield:.2f}%（{fcf_eval}，{fcf_vs}）\n")
+        if peg_1y is not None:
+            peg_eval = "低估" if peg_1y < 1.0 else "合理偏高" if peg_1y <= 1.5 else "偏高"
+            peg_vs = "优于行业" if peg_1y < 1.2 else "弱于行业"
+            f.write(f"- **PEG(1Y)**: {peg_1y:.2f}（{peg_eval}，{peg_vs}）\n")
         f.write("\n")
         
         f.write("## 💵 现金流与PEG关键指标\n\n")
