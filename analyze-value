@@ -89,6 +89,39 @@ def build_calendar_context(now: datetime, sector: str = "") -> Dict:
     }
 
 
+def build_otm_long_call_plan(current_price: float) -> Dict:
+    """用户偏好：通过虚值 long call 做现金流轮动；浮盈 50%-100% 分批减仓。"""
+    if current_price <= 0:
+        return {"available": False}
+
+    strike_1 = round(current_price * 1.10, 2)
+    strike_2 = round(current_price * 1.20, 2)
+
+    return {
+        "available": True,
+        "strategy": "OTM Long Call + 分批止盈回流现货",
+        "tenor": "6-12个月到期（LEAPS优先）",
+        "ladder": [
+            {
+                "weight": "60%",
+                "strike": strike_1,
+                "note": "主仓，优先选择成交活跃合约"
+            },
+            {
+                "weight": "40%",
+                "strike": strike_2,
+                "note": "弹性仓，控制总权利金"
+            }
+        ],
+        "trim_rules": [
+            "单腿浮盈达到 +50%：减仓约 30%-50% 锁定现金流",
+            "单腿浮盈达到 +100%：进一步减仓至仅保留底仓或全部止盈"
+        ],
+        "recycle": "止盈所得优先回流到正股左侧建仓区，形成现金流再投资闭环",
+        "risk": "long call 时间价值衰减快，若 45-60 天内趋势不及预期，需评估滚动或止损"
+    }
+
+
 def get_industry_benchmarks(sector: str, industry: str = "") -> Dict:
     """按行业给出核心估值/盈利/现金流对比基准（启发式）"""
     sector = (sector or "").lower()
@@ -630,6 +663,9 @@ def value_investing_analysis(ticker: str) -> Dict:
     # 市场时钟（中期选举/节假日/月份季节性）
     calendar = build_calendar_context(datetime.now(), profile.get('sector', ''))
 
+    # 期权现金流策略（用户偏好：虚值long call + 50%-100%减仓回流）
+    options_strategy = build_otm_long_call_plan(current_price)
+
     # 五维评分
     score_valuation = 5 if margin_of_safety > 30 else 4 if margin_of_safety > 15 else 3 if margin_of_safety > 0 else 2
     score_moat = int(moat["average"])
@@ -697,6 +733,7 @@ def value_investing_analysis(ticker: str) -> Dict:
         "calendar": calendar,
 
         "options": options_summary,
+        "options_strategy": options_strategy,
         
         "moat": moat,
         
@@ -855,6 +892,17 @@ def print_value_report(data: Dict):
         print(f"• Call成交量: {o.get('call_volume')} | Put成交量: {o.get('put_volume')} | P/C成交量比: {o.get('put_call_volume_ratio')}")
         print(f"• Call持仓量: {o.get('call_open_interest')} | Put持仓量: {o.get('put_open_interest')} | P/C持仓比: {o.get('put_call_oi_ratio')}")
         print(f"• ATM附近平均IV: {round(o.get('atm_iv', 0) * 100, 2)}%")
+
+    os = data.get('options_strategy', {})
+    if os.get('available'):
+        print(f"\n【期权现金流策略（虚值 Long Call）】")
+        print(f"• 策略: {os.get('strategy')} | 到期建议: {os.get('tenor')}")
+        for leg in os.get('ladder', []):
+            print(f"  - 仓位{leg.get('weight')}: 行权价≈${leg.get('strike')}（{leg.get('note')}）")
+        for r in os.get('trim_rules', []):
+            print(f"• 止盈规则: {r}")
+        print(f"• 现金流回投: {os.get('recycle')}")
+        print(f"• 风险提示: {os.get('risk')}")
 
     cal = data.get('calendar', {})
     if cal:
@@ -1228,6 +1276,20 @@ def save_value_report(data: Dict, filename: str = None):
             f.write(f"- **短期期权P/C成交量比**: {data['options'].get('put_call_volume_ratio')}\n")
             f.write(f"- **短期期权ATM IV**: {round(data['options'].get('atm_iv', 0) * 100, 2)}%\n")
         f.write("\n")
+
+        os = data.get('options_strategy', {})
+        if os.get('available'):
+            f.write("## 🧠 期权现金流策略（虚值 Long Call）\n\n")
+            f.write(f"- **策略**: {os.get('strategy')}\n")
+            f.write(f"- **到期建议**: {os.get('tenor')}\n")
+            f.write("- **分层建仓**:\n")
+            for leg in os.get('ladder', []):
+                f.write(f"  - {leg.get('weight')}：行权价约 ${leg.get('strike')}（{leg.get('note')}）\n")
+            f.write("- **止盈纪律**:\n")
+            for r in os.get('trim_rules', []):
+                f.write(f"  - {r}\n")
+            f.write(f"- **现金流回投**: {os.get('recycle')}\n")
+            f.write(f"- **风险提示**: {os.get('risk')}\n\n")
 
         f.write("### 核心数据快评（优秀区间 + 行业对比）\n\n")
         bm = get_industry_benchmarks(data.get('sector', ''), data.get('industry', ''))
