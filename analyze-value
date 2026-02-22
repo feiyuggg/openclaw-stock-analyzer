@@ -33,6 +33,62 @@ def score_to_text(score: int) -> str:
     return "优秀" if score >= 5 else "良好" if score >= 4 else "一般" if score >= 3 else "偏弱"
 
 
+def build_calendar_context(now: datetime, sector: str = "") -> Dict:
+    """构建中期选举/节假日/月份季节性的市场时钟与防御配置建议（启发式）"""
+    month = now.month
+    year = now.year
+
+    month_map = {
+        1: "一月效应窗口（小盘/高弹性易波动）",
+        2: "财报季延续，分化明显",
+        3: "一季报前预期博弈，波动上行",
+        4: "一季报密集，业绩定价更强",
+        5: "Sell in May 讨论升温，防御权重可上调",
+        6: "半年再平衡窗口，风格切换常见",
+        7: "二季报预热，优质龙头更抗震",
+        8: "流动性偏弱月份，回撤风险上升",
+        9: "历史弱势月，重视防御与现金流",
+        10: "波动高发月，事件冲击需控仓",
+        11: "选举/政策预期月，结果明朗后易再定价",
+        12: "年末窗口（Santa rally 概率提升）",
+    }
+
+    is_midterm_year = (year - 2) % 4 == 0
+    election_phase = "中期选举年" if is_midterm_year else "非中期选举年"
+
+    if is_midterm_year:
+        election_view = "中期选举年通常先波动后修复，防御+现金流资产在不确定期更占优"
+    else:
+        election_view = "非中期选举年更看基本面与利率主线，防御配置主要用于回撤对冲"
+
+    holiday_buckets = {
+        "Thanksgiving-Christmas": "年末节假日消费链与风险偏好回升窗口",
+        "Labor Day-Back to School": "开学季与秋季补库对必选消费更友好",
+        "Independence Day": "暑期出行链条波动加大，择优看现金流",
+    }
+
+    defensive_by_sector = {
+        "Technology": ["MSFT", "AAPL", "COST"],
+        "Communication Services": ["GOOGL", "VZ", "T"],
+        "Financial Services": ["BRK.B", "JPM", "CB"],
+        "Healthcare": ["JNJ", "ABBV", "UNH"],
+        "Consumer Defensive": ["PG", "KO", "PEP"],
+        "Energy": ["XOM", "CVX", "EPD"],
+        "Utilities": ["NEE", "SO", "DUK"],
+    }
+
+    picks = defensive_by_sector.get(sector, ["PG", "KO", "JNJ", "XOM", "LMT"])
+
+    return {
+        "month": month,
+        "month_view": month_map.get(month, "季节性信号中性"),
+        "election_phase": election_phase,
+        "election_view": election_view,
+        "holiday_view": holiday_buckets,
+        "defensive_watchlist": picks,
+    }
+
+
 def get_industry_benchmarks(sector: str, industry: str = "") -> Dict:
     """按行业给出核心估值/盈利/现金流对比基准（启发式）"""
     sector = (sector or "").lower()
@@ -571,6 +627,9 @@ def value_investing_analysis(ticker: str) -> Dict:
         peg_1y=peg_1y,
     )
 
+    # 市场时钟（中期选举/节假日/月份季节性）
+    calendar = build_calendar_context(datetime.now(), profile.get('sector', ''))
+
     # 五维评分
     score_valuation = 5 if margin_of_safety > 30 else 4 if margin_of_safety > 15 else 3 if margin_of_safety > 0 else 2
     score_moat = int(moat["average"])
@@ -635,6 +694,7 @@ def value_investing_analysis(ticker: str) -> Dict:
 
         "quality": quality,
         "standards": standards,
+        "calendar": calendar,
 
         "options": options_summary,
         
@@ -795,6 +855,17 @@ def print_value_report(data: Dict):
         print(f"• Call成交量: {o.get('call_volume')} | Put成交量: {o.get('put_volume')} | P/C成交量比: {o.get('put_call_volume_ratio')}")
         print(f"• Call持仓量: {o.get('call_open_interest')} | Put持仓量: {o.get('put_open_interest')} | P/C持仓比: {o.get('put_call_oi_ratio')}")
         print(f"• ATM附近平均IV: {round(o.get('atm_iv', 0) * 100, 2)}%")
+
+    cal = data.get('calendar', {})
+    if cal:
+        print(f"\n【市场时钟（中期选举 / 节假日 / 月份季节性）】")
+        print(f"• 当前月份观点: {cal.get('month_view', 'N/A')}")
+        print(f"• 选举周期: {cal.get('election_phase', 'N/A')} | 结论: {cal.get('election_view', 'N/A')}")
+        print("• 节假日效应: ")
+        for k, v in cal.get('holiday_view', {}).items():
+            print(f"  - {k}: {v}")
+        wl = ', '.join(cal.get('defensive_watchlist', []))
+        print(f"• 下跌期防御观察池: {wl}")
     
     # 维度1: 前瞻市盈率 (Forward P/E) 详细分析
     print(f"\n【一、前瞻市盈率 (Forward P/E) 详细分析】")
@@ -1193,7 +1264,18 @@ def save_value_report(data: Dict, filename: str = None):
             peg_vs = "优于行业" if peg_1y < bm['peg'] else "弱于行业"
             f.write(f"- **PEG(1Y)**: {peg_1y:.2f}（{peg_eval}，{peg_vs}）\n")
         f.write("\n")
-        
+
+        cal = data.get('calendar', {})
+        if cal:
+            f.write("## 🗓️ 市场时钟（中期选举 / 节假日 / 月份季节性）\n\n")
+            f.write(f"- **当前月份观点**: {cal.get('month_view', 'N/A')}\n")
+            f.write(f"- **选举周期**: {cal.get('election_phase', 'N/A')}；{cal.get('election_view', 'N/A')}\n")
+            f.write("- **节假日效应**:\n")
+            for k, v in cal.get('holiday_view', {}).items():
+                f.write(f"  - {k}: {v}\n")
+            wl = ', '.join(cal.get('defensive_watchlist', []))
+            f.write(f"- **下跌期防御观察池**: {wl}\n\n")
+
         f.write("## 💵 现金流与PEG关键指标\n\n")
         f.write(f"- **每股经营现金流 (OCF/share)**: ${data['cashflow'].get('ocf_per_share', 0)}\n")
         f.write(f"- **每股自由现金流 (FCF/share)**: ${data['cashflow'].get('fcf_per_share', 0)}\n")
