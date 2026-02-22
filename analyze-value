@@ -100,7 +100,7 @@ def build_otm_long_call_plan(current_price: float) -> Dict:
     return {
         "available": True,
         "strategy": "OTM Long Call + 分批止盈回流现货",
-        "tenor": "6-12个月到期（LEAPS优先）",
+        "tenor": "至少6个月，优先12个月以上（可用LEAPS）",
         "ladder": [
             {
                 "weight": "60%",
