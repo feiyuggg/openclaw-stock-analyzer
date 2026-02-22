@@ -8,7 +8,7 @@ Usage: analyze-value <TICKER> [options]
 import sys
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Tuple
 
 
@@ -89,7 +89,22 @@ def build_calendar_context(now: datetime, sector: str = "") -> Dict:
     }
 
 
-def build_otm_long_call_plan(current_price: float) -> Dict:
+def _parse_expiration(x):
+    if isinstance(x, datetime):
+        return x
+    s = str(x).strip()
+    if not s:
+        return None
+    s = s.split(' ')[0]
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def build_otm_long_call_plan(current_price: float, option_chain=None) -> Dict:
     """用户偏好：通过虚值 long call 做现金流轮动；浮盈 50%-100% 分批减仓。"""
     if current_price <= 0:
         return {"available": False}
@@ -97,22 +112,79 @@ def build_otm_long_call_plan(current_price: float) -> Dict:
     strike_1 = round(current_price * 1.10, 2)
     strike_2 = round(current_price * 1.20, 2)
 
+    contracts = []
+    try:
+        if option_chain is not None and not getattr(option_chain, 'empty', True):
+            df = option_chain.reset_index().copy()
+            if {'expiration', 'optionType', 'strike'}.issubset(df.columns):
+                calls = df[df['optionType'] == 'calls'].copy()
+                calls['exp_dt'] = calls['expiration'].apply(_parse_expiration)
+                calls = calls[calls['exp_dt'].notna()]
+
+                today = datetime.now()
+                targets = [
+                    ("6-9个月主仓", 180, 1.10),
+                    ("12-18个月弹性仓", 365, 1.20),
+                ]
+
+                for label, days, strike_mult in targets:
+                    target_date = today + timedelta(days=days)
+                    candidates = sorted(calls[calls['exp_dt'] >= target_date]['exp_dt'].unique())
+                    if not candidates:
+                        candidates = sorted(calls['exp_dt'].unique())
+                    if not candidates:
+                        continue
+
+                    exp_dt = candidates[0]
+                    sub = calls[calls['exp_dt'] == exp_dt]
+                    strikes = sorted({safe_float(s) for s in sub['strike'].dropna().tolist() if safe_float(s) > 0})
+                    if not strikes:
+                        continue
+
+                    target_strike = current_price * strike_mult
+                    best_strike = min(strikes, key=lambda x: abs(x - target_strike))
+                    contracts.append({
+                        "bucket": label,
+                        "expiration": exp_dt.strftime("%Y-%m-%d"),
+                        "strike": round(best_strike, 2),
+                        "target_otm": f"{int((strike_mult - 1) * 100)}% OTM"
+                    })
+    except Exception:
+        contracts = []
+
+    ladder = [
+        {
+            "weight": "60%",
+            "strike": strike_1,
+            "note": "主仓，优先选择成交活跃合约"
+        },
+        {
+            "weight": "40%",
+            "strike": strike_2,
+            "note": "弹性仓，控制总权利金"
+        }
+    ]
+
+    if len(contracts) >= 2:
+        ladder = [
+            {
+                "weight": "60%",
+                "strike": contracts[0]['strike'],
+                "note": f"主仓，{contracts[0]['expiration']} 到期，{contracts[0]['target_otm']}"
+            },
+            {
+                "weight": "40%",
+                "strike": contracts[1]['strike'],
+                "note": f"弹性仓，{contracts[1]['expiration']} 到期，{contracts[1]['target_otm']}"
+            }
+        ]
+
     return {
         "available": True,
         "strategy": "OTM Long Call + 分批止盈回流现货",
         "tenor": "至少6个月，优先12个月以上（可用LEAPS）",
-        "ladder": [
-            {
-                "weight": "60%",
-                "strike": strike_1,
-                "note": "主仓，优先选择成交活跃合约"
-            },
-            {
-                "weight": "40%",
-                "strike": strike_2,
-                "note": "弹性仓，控制总权利金"
-            }
-        ],
+        "contracts": contracts,
+        "ladder": ladder,
         "trim_rules": [
             "单腿浮盈达到 +50%：减仓约 30%-50% 锁定现金流",
             "单腿浮盈达到 +100%：进一步减仓至仅保留底仓或全部止盈"
@@ -664,7 +736,7 @@ def value_investing_analysis(ticker: str) -> Dict:
     calendar = build_calendar_context(datetime.now(), profile.get('sector', ''))
 
     # 期权现金流策略（用户偏好：虚值long call + 50%-100%减仓回流）
-    options_strategy = build_otm_long_call_plan(current_price)
+    options_strategy = build_otm_long_call_plan(current_price, option_chain)
 
     # 五维评分
     score_valuation = 5 if margin_of_safety > 30 else 4 if margin_of_safety > 15 else 3 if margin_of_safety > 0 else 2
@@ -897,6 +969,10 @@ def print_value_report(data: Dict):
     if os.get('available'):
         print(f"\n【期权现金流策略（虚值 Long Call）】")
         print(f"• 策略: {os.get('strategy')} | 到期建议: {os.get('tenor')}")
+        if os.get('contracts'):
+            print("• 具体合约价位（建议）:")
+            for c in os.get('contracts', []):
+                print(f"  - {c.get('bucket')}: 到期 {c.get('expiration')} | 行权价 ${c.get('strike')} ({c.get('target_otm')})")
         for leg in os.get('ladder', []):
             print(f"  - 仓位{leg.get('weight')}: 行权价≈${leg.get('strike')}（{leg.get('note')}）")
         for r in os.get('trim_rules', []):
@@ -1282,6 +1358,10 @@ def save_value_report(data: Dict, filename: str = None):
             f.write("## 🧠 期权现金流策略（虚值 Long Call）\n\n")
             f.write(f"- **策略**: {os.get('strategy')}\n")
             f.write(f"- **到期建议**: {os.get('tenor')}\n")
+            if os.get('contracts'):
+                f.write("- **具体合约价位（建议）**:\n")
+                for c in os.get('contracts', []):
+                    f.write(f"  - {c.get('bucket')}: 到期 {c.get('expiration')} | 行权价 ${c.get('strike')}（{c.get('target_otm')}）\n")
             f.write("- **分层建仓**:\n")
             for leg in os.get('ladder', []):
                 f.write(f"  - {leg.get('weight')}：行权价约 ${leg.get('strike')}（{leg.get('note')}）\n")
