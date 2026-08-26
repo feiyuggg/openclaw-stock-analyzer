@@ -1,3 +1,5 @@
+
+
 # Stock Analyzer Skill
 
 自动化股票五维投资价值分析工具。
@@ -31,6 +33,11 @@ analyze-stock TSLA --save
 ```bash
 analyze-stock NVDA --format json    # JSON格式
 analyze-stock META --format md      # Markdown格式
+```
+
+### 价值投资分析
+```bash
+analyze-value AAPL  # 价值投资深度分析
 ```
 
 ## 分析维度
